@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/yi-nology/ekit-network/network/loadbalance"
+	"github.com/yi-nology/ekit-httpx/loadbalance"
 	nnsclient "github.com/yi-nology/ekit-nns/nns/client"
 )
 

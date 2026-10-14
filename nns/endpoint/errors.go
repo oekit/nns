@@ -3,7 +3,7 @@ package endpoint
 import (
 	"errors"
 
-	"github.com/yi-nology/ekit-network/network/httpx"
+	"github.com/yi-nology/ekit-httpx/httpx"
 )
 
 // ErrCircuitOpen 表示熔断器处于打开状态、请求被拒绝。

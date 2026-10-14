@@ -6,9 +6,11 @@ require (
 	github.com/cloudwego/hertz v0.10.6
 	github.com/prometheus/client_golang v1.24.1
 	github.com/sony/gobreaker v1.0.0
+	github.com/yi-nology/ekit-concurrency v0.1.0
 	github.com/yi-nology/ekit-core v0.1.0
-	github.com/yi-nology/ekit-network v0.1.0
-	github.com/yi-nology/ekit-observability v0.1.0
+	github.com/yi-nology/ekit-httpx v0.1.0
+	github.com/yi-nology/ekit-logx v0.1.0
+	github.com/yi-nology/ekit-metrics v0.1.0
 	github.com/yi-nology/ekit-registry v0.1.0
 	google.golang.org/grpc v1.83.2
 )
@@ -68,6 +70,7 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/yi-nology/ekit-observability v0.1.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.46.0 // indirect
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect

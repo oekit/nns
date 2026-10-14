@@ -13,13 +13,13 @@ import (
 
 	nnsclient "github.com/yi-nology/ekit-nns/nns/client"
 
-	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
+	"github.com/yi-nology/ekit-metrics/resilience"
 
 	"github.com/cloudwego/hertz/pkg/protocol"
 	"github.com/sony/gobreaker"
-	"github.com/yi-nology/ekit-network/network/httpx"
-	"github.com/yi-nology/ekit-network/network/loadbalance"
-	"github.com/yi-nology/ekit-observability/observability/logx"
+	"github.com/yi-nology/ekit-httpx/httpx"
+	"github.com/yi-nology/ekit-httpx/loadbalance"
+	"github.com/yi-nology/ekit-logx"
 	"github.com/yi-nology/ekit-registry/registry"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yi-nology/ekit-network/network/loadbalance"
+	"github.com/yi-nology/ekit-httpx/loadbalance"
 	nnsclient "github.com/yi-nology/ekit-nns/nns/client"
 	"github.com/yi-nology/ekit-nns/nns/metadata"
 	"github.com/yi-nology/ekit-registry/registry"

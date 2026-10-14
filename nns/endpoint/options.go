@@ -5,7 +5,7 @@ import (
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
-	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
+	"github.com/yi-nology/ekit-metrics/resilience"
 )
 
 // defaultBreakerSettings 是 per-service 熔断器的默认参数

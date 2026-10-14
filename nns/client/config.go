@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/yi-nology/ekit-core/concurrency/async"
+	"github.com/yi-nology/ekit-concurrency/async"
 	"github.com/yi-nology/ekit-nns/nns/metadata"
 )
 
