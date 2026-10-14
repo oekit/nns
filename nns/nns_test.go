@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	nacospkg "github.com/yi-nology/ekit-registry/nacos"
 	"github.com/yi-nology/ekit-nns/nns/metadata"
+	nacospkg "github.com/yi-nology/ekit-registry/nacos"
 	"github.com/yi-nology/ekit-registry/registry"
 )
 

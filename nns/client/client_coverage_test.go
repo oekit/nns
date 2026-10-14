@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yi-nology/ekit-registry/registrymocks"
 	"github.com/yi-nology/ekit-nns/nns/metadata"
 	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/yi-nology/ekit-registry/registrymocks"
 )
 
 // TestUnsubscribeService covers the 0%-coverage UnsubscribeService

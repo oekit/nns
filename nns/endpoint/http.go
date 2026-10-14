@@ -15,12 +15,12 @@ import (
 
 	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
 
+	"github.com/cloudwego/hertz/pkg/protocol"
+	"github.com/sony/gobreaker"
 	"github.com/yi-nology/ekit-network/network/httpx"
 	"github.com/yi-nology/ekit-network/network/loadbalance"
 	"github.com/yi-nology/ekit-observability/observability/logx"
 	"github.com/yi-nology/ekit-registry/registry"
-	"github.com/cloudwego/hertz/pkg/protocol"
-	"github.com/sony/gobreaker"
 )
 
 var epLog = logx.Delegating("nns-endpoint")

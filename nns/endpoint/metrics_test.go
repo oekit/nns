@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	prom "github.com/prometheus/client_golang/prometheus"
+	"github.com/sony/gobreaker"
 	nnsclient "github.com/yi-nology/ekit-nns/nns/client"
 	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
 	"github.com/yi-nology/ekit-registry/registry"
-	prom "github.com/prometheus/client_golang/prometheus"
-	"github.com/sony/gobreaker"
 )
 
 // metricValue 从 Registry 黑盒采集指定 metric + labels 的值（单值 gauge/counter）。

@@ -12,9 +12,9 @@ import (
 
 	"github.com/yi-nology/ekit-observability/observability/metrics/resilience"
 
+	"github.com/sony/gobreaker"
 	"github.com/yi-nology/ekit-network/network/loadbalance"
 	"github.com/yi-nology/ekit-registry/registry"
-	"github.com/sony/gobreaker"
 	"google.golang.org/grpc"
 )
 

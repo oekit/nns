@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yi-nology/ekit-registry/registrymocks"
 	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/yi-nology/ekit-registry/registrymocks"
 )
 
 // TestOnConfigChange_LateRegistrationReceivesEvents 回归测试（W1-T3）：
