@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yi-nology/ekit-logx"
 	"github.com/yi-nology/ekit-nns/nns/client"
 	"github.com/yi-nology/ekit-nns/nns/endpoint"
 	"github.com/yi-nology/ekit-nns/nns/metadata"
-	"github.com/yi-nology/ekit-logx"
 	"github.com/yi-nology/ekit-registry/nacos"
 	"github.com/yi-nology/ekit-registry/registry"
 	nacosimpl "github.com/yi-nology/ekit-registry/registry/nacos"

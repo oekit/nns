@@ -11,8 +11,8 @@ import (
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/sony/gobreaker"
-	nnsclient "github.com/yi-nology/ekit-nns/nns/client"
 	"github.com/yi-nology/ekit-metrics/resilience"
+	nnsclient "github.com/yi-nology/ekit-nns/nns/client"
 	"github.com/yi-nology/ekit-registry/registry"
 )
 

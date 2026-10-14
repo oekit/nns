@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/yi-nology/ekit-concurrency/singleflight"
-	"github.com/yi-nology/ekit-nns/nns/metadata"
 	"github.com/yi-nology/ekit-logx"
+	"github.com/yi-nology/ekit-nns/nns/metadata"
 	"github.com/yi-nology/ekit-registry/registry"
 )
 
