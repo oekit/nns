@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yi-nology/ekit-concurrency/singleflight"
-	"github.com/yi-nology/ekit-logx"
-	"github.com/yi-nology/ekit-nns/nns/metadata"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/concurrency/singleflight"
+	"github.com/oekit/logx"
+	"github.com/oekit/nns/nns/metadata"
+	"github.com/oekit/registry/registry"
 )
 
 var nnsLog = logx.Delegating("nns")

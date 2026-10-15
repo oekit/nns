@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/yi-nology/ekit-concurrency/async"
-	"github.com/yi-nology/ekit-nns/nns/metadata"
+	"github.com/oekit/concurrency/async"
+	"github.com/oekit/nns/nns/metadata"
 )
 
 // LocalServiceInit 初始化本地服务，从 Nacos 配置中心拉取服务配置。

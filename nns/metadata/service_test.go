@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/registry/registry"
 )
 
 func TestInstance_Addr(t *testing.T) {

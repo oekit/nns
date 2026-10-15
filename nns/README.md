@@ -21,7 +21,7 @@
 ```go
 import (
     "context"
-    "github.com/yi-nology/ekit-nns/nns"
+    "github.com/oekit/nns/nns"
 )
 
 cfg := nacos.Bootstrap{
@@ -173,7 +173,7 @@ err := client.Subscribe(ctx, "user-service", func(instances []metadata.Instance)
 ### 框架适配：Kitex
 
 ```go
-import nnskitex "github.com/yi-nology/ekit-kitex/nns/kitex"
+import nnskitex "github.com/oekit/kitex/nns/kitex"
 
 // Client with NNS discovery
 cli, _ := echo.NewClient("dep-service",
@@ -188,7 +188,7 @@ svr, _ := echo.NewServer(handler,
 ### 框架适配：Hertz
 
 ```go
-import nnshertz "github.com/yi-nology/ekit-hertz/nns/hertz"
+import nnshertz "github.com/oekit/hertz/nns/hertz"
 import sd "github.com/cloudwego/hertz/pkg/app/client/service_discovery"
 
 cli.Use(sd.Discovery(nnshertz.NewResolver(client.ServiceClient())))

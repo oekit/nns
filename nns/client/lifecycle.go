@@ -3,8 +3,8 @@ package client
 import (
 	"context"
 
-	"github.com/yi-nology/ekit-core/lifecycle"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/core/lifecycle"
+	"github.com/oekit/registry/registry"
 )
 
 // RunWithLifecycle 向注册中心注册当前服务实例,并通过 lifecycle.App 注册

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yi-nology/ekit-nns/nns/metadata"
-	nacospkg "github.com/yi-nology/ekit-registry/nacos"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/nns/nns/metadata"
+	nacospkg "github.com/oekit/registry/nacos"
+	"github.com/oekit/registry/registry"
 )
 
 // TestNew_ReturnsIndependentInstances 是 NNS 状态治理的核心验收测试：

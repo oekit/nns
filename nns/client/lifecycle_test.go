@@ -6,8 +6,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yi-nology/ekit-registry/registry"
-	"github.com/yi-nology/ekit-registry/registrymocks"
+	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry/registrymocks"
 )
 
 // fakeRegistrar 捕获 Register / Deregister 调用（registrymocks.Registrar 别名，

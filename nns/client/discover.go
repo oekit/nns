@@ -3,7 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/registry/registry"
 	"time"
 )
 

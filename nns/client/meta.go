@@ -3,8 +3,8 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"github.com/yi-nology/ekit-nns/nns/metadata"
-	"github.com/yi-nology/ekit-registry/registry"
+	"github.com/oekit/nns/nns/metadata"
+	"github.com/oekit/registry/registry"
 )
 
 // BindServiceBasic 解析服务全名并设置服务基本配置的默认值。
