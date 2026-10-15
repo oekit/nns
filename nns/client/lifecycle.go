@@ -12,7 +12,8 @@ import (
 //
 // 业务使用(在 bootstrap.Run userFn 内):
 //
-//	bootstrap.Run(cfg, func(app *bootstrap.App) error {
+//	b, _ := bootstrap.New(bootstrap.WithServiceName("svc")) // + nacos/obs WithXxx 按需注入
+//	b.Run(func(app *bootstrap.App) error {
 //	    nnsc := nns.New(nacosBootstrap, opts...)  // 门面负责 provider 默认构造
 //	    if err := nnsc.RunWithLifecycle(app, "my-svc", 8080); err != nil {
 //	        return err
