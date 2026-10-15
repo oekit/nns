@@ -3,10 +3,10 @@ module github.com/yi-nology/ekit-nns
 go 1.26.0
 
 require (
-	github.com/yi-nology/ekit-concurrency v0.1.0
+	github.com/yi-nology/ekit-concurrency v0.1.1
 	github.com/yi-nology/ekit-core v0.3.0
-	github.com/yi-nology/ekit-logx v0.1.1
-	github.com/yi-nology/ekit-registry v0.2.1
+	github.com/yi-nology/ekit-logx v0.1.4
+	github.com/yi-nology/ekit-registry v0.2.2
 )
 
 require (
