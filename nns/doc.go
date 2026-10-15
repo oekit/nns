@@ -60,9 +60,9 @@
 //
 // 使用 bootstrap.Run 并设置 DepServices 自动初始化 NNS：
 //
-//	bootstrap.Run(bootstrap.Config{
-//	    DepServices: []string{"dep.service"},
-//	}, func(app *bootstrap.App) error {
+//	b, _ := bootstrap.New(bootstrap.WithServiceName("my-service"),
+//	    bootstrapnacos.WithNNS(nacosCfg, port, []string{"dep.service"})) // bootstrap/nacos
+//	b.Run(func(app *bootstrap.App) error {
 //	    // ...
 //	})
 package nns

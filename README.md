@@ -14,8 +14,17 @@
 go get github.com/oekit/nns@v0.3.2
 ```
 
-## 快速使用
+## 能做什么
 
+- **一行创建**：`nns.New(nacos.Bootstrap{...})`，mock 模式本地开发零 Nacos
+- **全生命周期**：Init（依赖服务预加载）→ Register/Deregister → Close（终结化）
+- **实例缓存 + singleflight**：发现调用有合并与缓存
+- **ServiceClient 逃生口**：把完整能力交给 nns-endpoint / 框架适配器
+- **配置热更回调**：`OnConfigChange`
+
+## 使用示例
+
+### 门面全流程
 ```go
 import (
     nns "github.com/oekit/nns/nns"
@@ -25,8 +34,13 @@ import (
 c := nns.New(nacospkg.Bootstrap{ServiceName: "my-service"}, nns.WithMockMode(true))
 _ = c.Init(ctx, "my-service", []string{"dep-svc"})
 insts, _ := c.GetInstances(ctx, "dep-svc")
+_ = c.Register(ctx, 8080)
+defer c.Close()
 ```
-
+### 交给 bootstrap（推荐）
+```go
+bootstrapnacos.WithNNS(cfg.Nacos, cfg.Port, cfg.DepServices) // 生命周期自动托管
+```
 ## 包清单
 
 - \`nns/\` — 门面：nns.New 一行创建、mock 模式、Close 终结化
