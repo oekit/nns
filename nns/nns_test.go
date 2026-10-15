@@ -138,25 +138,6 @@ func TestGetAllInstances_MockMode(t *testing.T) {
 	}
 }
 
-func TestMakeHTTPEndpoint(t *testing.T) {
-	c := New(
-		nacospkg.Bootstrap{},
-		WithMockMode(true),
-		WithStaticInstance("http-svc", []registry.Instance{
-			{IP: "10.0.0.1", Port: 8080},
-		}),
-	)
-	defer c.Close()
-
-	ep, err := c.MakeHTTPEndpoint("http-svc")
-	if err != nil {
-		t.Fatalf("MakeHTTPEndpoint error: %v", err)
-	}
-	if ep == nil {
-		t.Fatal("expected non-nil endpoint")
-	}
-}
-
 func TestServiceClient(t *testing.T) {
 	c := New(nacospkg.Bootstrap{ServiceName: "svc"}, WithMockMode(true))
 

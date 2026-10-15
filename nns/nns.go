@@ -8,7 +8,6 @@ import (
 
 	"github.com/yi-nology/ekit-logx"
 	"github.com/yi-nology/ekit-nns/nns/client"
-	"github.com/yi-nology/ekit-nns/nns/endpoint"
 	"github.com/yi-nology/ekit-nns/nns/metadata"
 	"github.com/yi-nology/ekit-registry/nacos"
 	"github.com/yi-nology/ekit-registry/registry"
@@ -23,9 +22,7 @@ var nnsLog = logx.Delegating("nns")
 // registry/nacos 实现并注入 provider 无关的 ServiceClient（2026-09-19
 // 重构：默认构造从 nns/client 上提至此，治理核心不再绑定 provider）。
 type NNSClient struct {
-	client      *client.ServiceClient
-	httpFactory *endpoint.HTTPEndpointFactory
-	grpcFactory *endpoint.GRPCEndpointFactory
+	client *client.ServiceClient
 
 	// sdkClose 释放门面默认路径创建的 Nacos SDK 客户端
 	// （naming/config client 各持 gRPC 长连接 + 后台 goroutine）。
@@ -112,13 +109,8 @@ func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 
 	c := client.New(clientOpts...)
 
-	httpFactory := endpoint.NewHTTPEndpointFactory(c)
-	grpcFactory := endpoint.NewGRPCEndpointFactory(c)
-
 	nnsc := &NNSClient{
-		client:      c,
-		httpFactory: httpFactory,
-		grpcFactory: grpcFactory,
+		client: c,
 	}
 	if len(closers) > 0 {
 		nnsc.sdkClose = func() {
@@ -242,30 +234,15 @@ func (n *NNSClient) SetStaticInstances(serviceName string, instances []registry.
 	n.client.SetStaticInstances(serviceName, instances)
 }
 
-// MakeHTTPEndpoint 为指定服务创建 HTTP 端点。
-func (n *NNSClient) MakeHTTPEndpoint(serviceName string) (endpoint.Endpoint, error) {
-	return n.httpFactory.MakeEndpoint(serviceName)
-}
-
-// MakeGRPCEndpoint 为指定服务创建 gRPC 端点。
-func (n *NNSClient) MakeGRPCEndpoint(serviceName string) (endpoint.Endpoint, error) {
-	return n.grpcFactory.MakeEndpoint(serviceName)
-}
-
 // Close 关闭 NNSClient 持有的所有资源（ServiceClient 的配置/实例订阅、
-// 回调状态、门面默认路径创建的 Nacos SDK 客户端、端点工厂）。
+// 回调状态、门面默认路径创建的 Nacos SDK 客户端）。
 // Close 是终结操作：默认路径下 SDK gRPC 连接已关闭，复用需重新 New。
+// 端点工厂自 Round-4 起移至 ekit-nns-endpoint，其生命周期由构造方管理。
 func (n *NNSClient) Close() {
 	n.closeOnce.Do(func() {
 		n.client.Close()
 		if n.sdkClose != nil {
 			n.sdkClose()
-		}
-		if n.httpFactory != nil {
-			n.httpFactory.Close()
-		}
-		if n.grpcFactory != nil {
-			n.grpcFactory.Close()
 		}
 	})
 }
