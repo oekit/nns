@@ -2,7 +2,7 @@
 
 > NNS 服务治理客户端——provider 无关的服务发现/配置/实例缓存/订阅，端点级熔断与换实例重试。
 
-> 项目主页：**https://oekit.github.io/oekit/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
+> 项目主页：**https://oekit.github.io/** · 名称由来：**O**pen **E**asy **Kit**（开源 · 易用 · 工具集合）
 
 本仓库是 [ekit](https://git.enjoye.top/enjoydream/ekit)（`git.enjoye.top/enjoydream/ekit` v0.34.0）
 拆分出的独立 Go module，属于 **oekit** oekit（Open Easy Kit）模块矩阵。
