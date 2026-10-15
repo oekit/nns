@@ -11,7 +11,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/nns@v0.3.2
+go get github.com/oekit/nns@v0.3.3
 ```
 
 ## 能做什么
