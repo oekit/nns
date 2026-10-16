@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/nns
 
 > NNS 服务治理门面——nns.New 一行创建（mock 模式 / ServiceClient 逃生口）
-> 当前版本：`v0.3.2` · module：`github.com/oekit/nns` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.3.3` · module：`github.com/oekit/nns` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `nns/`、`nns/client/`、`nns/metadata/`
