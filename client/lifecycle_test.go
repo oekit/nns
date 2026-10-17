@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 	"github.com/oekit/registry/registrymocks"
 )
 

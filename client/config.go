@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/oekit/concurrency/async"
-	"github.com/oekit/nns/nns/metadata"
+	"github.com/oekit/nns/metadata"
 )
 
 // LocalServiceInit 初始化本地服务，从 Nacos 配置中心拉取服务配置。

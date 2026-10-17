@@ -8,7 +8,7 @@
 ## 安装
 
 ```bash
-go get github.com/oekit/nns@v0.3.5
+go get github.com/oekit/nns@v0.4.0
 ```
 
 ## 这个仓库做什么
@@ -20,7 +20,7 @@ go get github.com/oekit/nns@v0.3.5
 
 ```go
 import (
-    nns "github.com/oekit/nns/nns"
+    nns "github.com/oekit/nns"
     nacospkg "github.com/oekit/registry/nacos"
 )
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/oekit/core/network"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // Register 向注册中心注册当前服务实例。

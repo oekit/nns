@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/oekit/nns/nns/metadata"
+	"github.com/oekit/nns/metadata"
+	"github.com/oekit/registry"
 	nacospkg "github.com/oekit/registry/nacos"
-	"github.com/oekit/registry/registry"
 )
 
 // TestNew_ReturnsIndependentInstances 是 NNS 状态治理的核心验收测试：

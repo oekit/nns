@@ -3,7 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // SubscribeService 订阅指定服务的实例变更，当实例列表变化时回调 callback。

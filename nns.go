@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/oekit/logx"
-	"github.com/oekit/nns/nns/client"
-	"github.com/oekit/nns/nns/metadata"
+	"github.com/oekit/nns/client"
+	"github.com/oekit/nns/metadata"
+	"github.com/oekit/registry"
 	"github.com/oekit/registry/nacos"
-	"github.com/oekit/registry/registry"
-	nacosimpl "github.com/oekit/registry/registry/nacos"
+	nacosimpl "github.com/oekit/registry/nacosimpl"
 )
 
 var nnsLog = logx.Delegating("nns")

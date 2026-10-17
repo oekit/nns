@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/oekit/core/lifecycle"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/registry"
 )
 
 // RunWithLifecycle 向注册中心注册当前服务实例,并通过 lifecycle.App 注册

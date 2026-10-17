@@ -9,8 +9,8 @@ import (
 
 	"github.com/oekit/concurrency/singleflight"
 	"github.com/oekit/logx"
-	"github.com/oekit/nns/nns/metadata"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/nns/metadata"
+	"github.com/oekit/registry"
 )
 
 var nnsLog = logx.Delegating("nns")

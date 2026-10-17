@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oekit/nns/nns/metadata"
-	"github.com/oekit/registry/registry"
+	"github.com/oekit/nns/metadata"
+	"github.com/oekit/registry"
 	"github.com/oekit/registry/registrymocks"
 )
 

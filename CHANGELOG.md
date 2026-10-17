@@ -2,6 +2,15 @@
 
 由 ekit v0.34.0（git.enjoye.top/enjoydream/ekit，冻结维护）拆分而来。所有 notable 变更记录如下。
 
+## [v0.4.0] — 2026-10-17
+
+### Breaking
+- **包提升至模块根**：
+  - `github.com/oekit/nns/nns` → `github.com/oekit/nns`
+  - `github.com/oekit/nns/nns/client` → `github.com/oekit/nns/client`
+  - `github.com/oekit/nns/nns/metadata` → `github.com/oekit/nns/metadata`
+  仅移动目录与导入路径，代码零逻辑变化
+- 依赖升级：registry v0.4.0（SPI 包提升至模块根）
 
 ## [v0.3.5] — 2026-10-17
 

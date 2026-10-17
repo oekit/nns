@@ -6,7 +6,7 @@ require (
 	github.com/oekit/concurrency v0.5.4
 	github.com/oekit/core v0.6.0
 	github.com/oekit/logx v0.5.0
-	github.com/oekit/registry v0.3.1
+	github.com/oekit/registry v0.4.0
 )
 
 require (
