@@ -1,6 +1,6 @@
 module github.com/oekit/nns
 
-go 1.26.0
+go 1.24.0
 
 require (
 	github.com/oekit/concurrency v0.1.5
