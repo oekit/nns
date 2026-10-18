@@ -1,3 +1,11 @@
+## [v0.4.2] — 2026-10-18
+
+### docs：包 overview 移除已删除的 MakeHTTPEndpoint 示例（[oekit/oekit.github.io#12](https://github.com/oekit/oekit.github.io/issues/12)）
+- doc.go「创建 HTTP Endpoint」段仍展示拆分时已移除的 `nnsc.MakeHTTPEndpoint`——
+  pkg.go.dev 包首页照抄会编译失败。改为现行形态：nns-endpoint 模块
+  `endpoint.NewHTTPEndpointFactory(nnsc.ServiceClient())`（工厂由调用方持有），
+  并注明背景。纯文档零代码改动
+
 # Changelog — oekit/nns
 
 由 ekit v0.34.0（git.enjoye.top/enjoydream/ekit，冻结维护）拆分而来。所有 notable 变更记录如下。

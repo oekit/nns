@@ -33,9 +33,14 @@
 //
 //	instances, err := nnsc.GetInstances(ctx, "user-service")
 //
-// 创建 HTTP Endpoint：
+// 创建 HTTP Endpoint（nns-endpoint 模块，工厂由调用方持有；nns 包自拆分起
+// 不再内置 MakeHTTPEndpoint——此前包注释仍展示已移除方法，照抄会编译失败，
+// oekit/oekit.github.io#12）：
 //
-//	endpoint, err := nnsc.MakeHTTPEndpoint("user-service")
+//	import "github.com/oekit/nns-endpoint/endpoint"
+//
+//	factory := endpoint.NewHTTPEndpointFactory(nnsc.ServiceClient())
+//	ep := factory("user-service")
 //
 // 框架适配：
 //
