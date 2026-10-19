@@ -1,3 +1,7 @@
+## [v0.4.3] — 2026-10-19
+
+- build: 矩阵内依赖地板对齐（align_floors 不动点）：concurrency v0.5.4 → v0.17.0、core v0.7.0 → v0.9.2、logx v0.6.0 → v0.7.0
+
 ## [v0.4.2] — 2026-10-18
 
 ### docs：包 overview 移除已删除的 MakeHTTPEndpoint 示例（[oekit/oekit.github.io#12](https://github.com/oekit/oekit.github.io/issues/12)）
