@@ -1,3 +1,7 @@
+## [v0.4.4] — 2026-10-21
+
+- 改用嵌套模块 registry/nacos 与 registry/nacosimpl——registry v0.5.0 起不再提供这两个子包（import 路径不变，由独立 module 提供）；registry 地板 v0.4.1 → v0.5.0
+
 ## [v0.4.3] — 2026-10-19
 
 - build: 矩阵内依赖地板对齐（align_floors 不动点）：concurrency v0.5.4 → v0.17.0、core v0.7.0 → v0.9.2、logx v0.6.0 → v0.7.0
