@@ -8,9 +8,9 @@
 //   - 构造注入：每次 New 返回独立实例，推荐通过构造注入传递，不依赖全局状态
 //   - 服务初始化：自动加载本地和依赖服务配置
 //   - HTTP/gRPC Endpoint：自动生成服务端点
-//   - 服务注册/注销：与 Nacos Naming 集成
+//   - 服务注册/注销：与 Nacos Naming 集成；RegisterAs 支持同一连接注册多个服务名
 //   - 实例订阅：实时监听服务实例变更
-//   - 多级降级：静态实例 > 缓存 > 注册中心
+//   - 多级降级：静态实例 > 缓存 > 注册中心（降级序可配置，支持注册中心优先 + 静态兜底）
 //   - 框架适配：通过 ServiceClient() 暴露给 nns/kitex、nns/hertz 适配器
 //
 // # 快速接入
@@ -58,8 +58,21 @@
 //
 //   - WithCacheExpiry: 缓存过期时间，默认 30s
 //   - WithMockMode: 启用模拟模式（本地开发）
-//   - WithStaticInstances: 静态实例配置
+//   - WithStaticInstance: 静态实例配置（短路语义）
+//   - WithStaticFallback: 静态兜底实例（注册中心优先，注册中心无果时参与）
+//   - WithFallbackOrder: 全局降级序（默认 client.FallbackStaticFirst）
 //   - WithLocalServiceConfig: 本地服务配置（不从 Nacos 获取）
+//
+// # 多端点服务
+//
+// 一个服务对外暴露多个端点（HTTP + RPC 双协议）时，用 RegisterAs 把每个名字
+// 各注册一次即可——同一个 SDK 连接，不必为每个名字各开一个门面实例：
+//
+//	err = nnsc.RegisterAs(ctx, "shop-http", 8080)
+//	err = nnsc.RegisterAs(ctx, "com.example.shop.order", 9090)
+//	// 关停时对称注销
+//	err = nnsc.DeregisterAs(ctx, "shop-http", 8080)
+//	err = nnsc.DeregisterAs(ctx, "com.example.shop.order", 9090)
 //
 // # 与 bootstrap 集成
 //

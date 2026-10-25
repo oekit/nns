@@ -19,6 +19,10 @@ var nnsLog = logx.Delegating("nns")
 // 常见场景：未注入 registrar、Mock 模式未启用、provider 构造失败降级。
 var ErrRegistrarUnavailable = errors.New("nns: registrar not available")
 
+// ErrServiceNameRequired 在显式指定服务名的注册/注销入口（RegisterAs /
+// DeregisterAs）拿到空服务名时返回。
+var ErrServiceNameRequired = errors.New("nns: service name required")
+
 // ErrClientClosed 在 ServiceClient.Close() 之后调用订阅类方法时返回。
 // Close 是终结操作（v0.28.0 起），复用需重新 New。
 var ErrClientClosed = errors.New("nns: client closed")
@@ -79,6 +83,12 @@ type ServiceClient struct {
 
 	// 静态服务地址 - 本地开发或特殊场景直接配置
 	staticInstances map[string][]registry.Instance
+	// fallbackOnly 标记哪些服务的静态实例是「兜底」语义（WithStaticFallback），
+	// 而非「短路」语义——见 WithStaticFallback 的说明
+	fallbackOnly map[string]bool
+	// fallbackOrder 全局降级序：静态实例与注册中心谁优先
+	// （缺省 FallbackStaticFirst，见 WithFallbackOrder）
+	fallbackOrder FallbackOrder
 
 	// Mock 模式 - 本地开发不依赖 Nacos
 	mockMode bool
@@ -100,12 +110,22 @@ func WithMockMode(enabled bool) ClientOption {
 }
 
 // WithStaticInstances 配置指定服务的静态实例列表，用于本地开发或特殊场景。
+//
+// 默认是**短路**语义：配了该服务的静态实例后，GetInstances 直接返回它们，
+// 不再查询注册中心。需要「注册中心优先、静态地址兜底」的生产形态请用
+// WithStaticFallback（或全局 WithFallbackOrder(FallbackRegistryFirst)）。
+//
+// 同一服务上与 WithStaticFallback 重复配置时以最后一次调用为准——本选项把
+// 该服务恢复为短路语义。
 func WithStaticInstances(serviceName string, instances []registry.Instance) ClientOption {
 	return func(c *ServiceClient) {
 		if c.staticInstances == nil {
 			c.staticInstances = make(map[string][]registry.Instance)
 		}
 		c.staticInstances[serviceName] = instances
+		if c.fallbackOnly != nil {
+			delete(c.fallbackOnly, serviceName)
+		}
 	}
 }
 
@@ -185,6 +205,7 @@ func New(opts ...ClientOption) *ServiceClient {
 		instanceCache:      make(map[string][]registry.Instance),
 		cacheLastUpdate:    make(map[string]time.Time),
 		staticInstances:    make(map[string][]registry.Instance),
+		fallbackOnly:       make(map[string]bool),
 		localServiceConfig: make(map[string]*metadata.ServiceBasic),
 	}
 
@@ -262,6 +283,22 @@ func (c *ServiceClient) Close() {
 // "mock 静默跳过"与"降级（registrar 不可用）"两种 registrar==nil 场景。
 func (c *ServiceClient) MockMode() bool {
 	return c.mockMode
+}
+
+// Registrar 返回底层注入的注册器；未注入时返回 nil。
+//
+// 逃生口：把「注册什么」交还给调用方（如按调用注入不同的实例字段），
+// 而 SDK 连接与生命周期仍由门面持有与释放。与 Discoverer 配套。
+func (c *ServiceClient) Registrar() registry.Registrar {
+	return c.registrar
+}
+
+// Discoverer 返回底层注入的发现器；未注入时返回 nil。
+//
+// 逃生口：与 Registrar 配套，让调用方直接驱动发现路径
+// （如按需携带分组/集群参数拉取实例），连接与生命周期仍归门面。
+func (c *ServiceClient) Discoverer() registry.Discoverer {
+	return c.discoverer
 }
 
 // GetBootstrap 已移除：它把具体注册中心配置类型暴露在公共 API 上，

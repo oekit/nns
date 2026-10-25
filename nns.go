@@ -37,6 +37,8 @@ type clientOptions struct {
 	cacheExpiry        time.Duration
 	mockMode           bool
 	staticInstances    map[string][]registry.Instance
+	staticFallbackOnly map[string]bool
+	fallbackOrder      client.FallbackOrder
 	localServiceConfig map[string]*metadata.ServiceBasic
 }
 
@@ -51,13 +53,57 @@ func WithMockMode(enabled bool) NNSOption {
 }
 
 // WithStaticInstance 配置指定服务的静态实例列表，用于本地开发或特殊场景。
+//
+// 默认是**短路**语义：配了该服务的静态实例后，GetInstances 直接返回它们，
+// 不再查询注册中心。需要「注册中心优先、静态地址兜底」的生产形态请用
+// WithStaticFallback（或全局 WithFallbackOrder(FallbackRegistryFirst)）。
 func WithStaticInstance(serviceName string, instances []registry.Instance) NNSOption {
 	return func(o *clientOptions) {
 		if o.staticInstances == nil {
 			o.staticInstances = make(map[string][]registry.Instance)
 		}
 		o.staticInstances[serviceName] = instances
+		if o.staticFallbackOnly != nil {
+			delete(o.staticFallbackOnly, serviceName)
+		}
 	}
+}
+
+// WithStaticFallback 配置指定服务的**兜底**静态实例。
+//
+// 与 WithStaticInstance 的区别只在参与时机：
+//
+//   - WithStaticInstance：短路静态——配了就直接返回，注册中心不被查询；
+//   - WithStaticFallback：兜底静态——只有注册中心路径失败或返回空时才返回它。
+//
+// 典型用法是生产形态的「注册中心优先、静态地址兜底」：静态地址
+// （如 k8s Service DNS）与注册中心同时配置，注册中心有健康实例时以
+// 注册中心为准（静态地址在实例换 IP 后不会跟着变），注册中心冷启动或
+// 故障时才用静态地址兜底。
+//
+// 同一服务上重复配置以最后一次调用为准。
+func WithStaticFallback(serviceName string, instances []registry.Instance) NNSOption {
+	return func(o *clientOptions) {
+		if o.staticInstances == nil {
+			o.staticInstances = make(map[string][]registry.Instance)
+		}
+		o.staticInstances[serviceName] = instances
+		if o.staticFallbackOnly == nil {
+			o.staticFallbackOnly = make(map[string]bool)
+		}
+		o.staticFallbackOnly[serviceName] = true
+	}
+}
+
+// WithFallbackOrder 设置全局降级序：静态实例与注册中心谁优先。
+//
+// 缺省为 client.FallbackStaticFirst（静态实例短路注册中心，与既有行为
+// 一致）。设为 client.FallbackRegistryFirst 后，全部服务的静态实例降级
+// 为「兜底」：注册中心路径失败或返回空时才参与取值。
+//
+// 单服务可用 WithStaticFallback 单独指定兜底语义，不受全局序影响。
+func WithFallbackOrder(order client.FallbackOrder) NNSOption {
+	return func(o *clientOptions) { o.fallbackOrder = order }
 }
 
 // WithLocalServiceConfig 配置本地服务配置（不从 Nacos 获取）
@@ -92,9 +138,14 @@ func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 		client.WithCacheExpiry(o.cacheExpiry),
 		client.WithMockMode(o.mockMode),
 		client.WithConfigGroup(cfg.Group),
+		client.WithFallbackOrder(o.fallbackOrder),
 	)
 
 	for svc, instances := range o.staticInstances {
+		if o.staticFallbackOnly[svc] {
+			clientOpts = append(clientOpts, client.WithStaticFallback(svc, instances))
+			continue
+		}
 		clientOpts = append(clientOpts, client.WithStaticInstances(svc, instances))
 	}
 
@@ -193,9 +244,51 @@ func (n *NNSClient) Register(ctx context.Context, port int, opts ...registry.Reg
 	return n.client.Register(ctx, port, opts...)
 }
 
+// RegisterAs 向注册中心注册当前服务实例到**指定服务名**下。
+//
+// 与 Register 的区别只有一处：服务名由调用方显式给出，而不是取 Init 记录的
+// 自身服务名。因此 RegisterAs 不要求先 Init。
+//
+// 一个服务对外暴露多个端点（HTTP + RPC 双协议、分别注册在短名与完整 RPC
+// 服务名下）时，用同一个 SDK 连接把每个名字各注册一次即可——不必为每个名字
+// 各开一个门面实例（那会翻倍 Nacos gRPC 长连接与后台 goroutine）。
+//
+// 端口各自传入（同一进程的两个端点端口不同）。IP 取 GetPodIP 探测的本机 IP。
+// opts 控制权重、元数据等注册选项。
+//
+// 配套的注销入口是 DeregisterAs：注册了几个名字就要注销几个名字，否则注册
+// 中心里会留下无人回收的实例。
+func (n *NNSClient) RegisterAs(ctx context.Context, serviceName string, port int, opts ...registry.RegisterOptionFunc) error {
+	return n.client.RegisterAs(ctx, serviceName, port, opts...)
+}
+
 // Deregister 从注册中心注销当前服务实例。
 func (n *NNSClient) Deregister(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
 	return n.client.Deregister(ctx, port, opts...)
+}
+
+// DeregisterAs 从注册中心注销指定服务名下的当前服务实例。
+//
+// 与 RegisterAs 配套：注销的实例与服务名、端口必须与注册时一致，否则注册
+// 中心匹配不到实例、注销会静默失效。
+func (n *NNSClient) DeregisterAs(ctx context.Context, serviceName string, port int, opts ...registry.RegisterOptionFunc) error {
+	return n.client.DeregisterAs(ctx, serviceName, port, opts...)
+}
+
+// Registrar 返回底层注入的注册器；未注入时返回 nil。
+//
+// 逃生口：把「注册什么」交还给调用方（如注册与本进程不同的实例地址），
+// 而 SDK 连接与生命周期仍由本门面持有与释放。与 Discoverer 配套。
+func (n *NNSClient) Registrar() registry.Registrar {
+	return n.client.Registrar()
+}
+
+// Discoverer 返回底层注入的发现器；未注入时返回 nil。
+//
+// 逃生口：与 Registrar 配套，让调用方直接驱动发现路径，连接与生命周期
+// 仍归本门面。
+func (n *NNSClient) Discoverer() registry.Discoverer {
+	return n.client.Discoverer()
 }
 
 // GetService 获取指定服务的基本配置信息。
