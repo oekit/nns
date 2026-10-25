@@ -7,8 +7,11 @@
 // 每次调用 New 返回独立实例（v0.15.2 起无包级单例）。
 //
 // 能力一览：
-//   - 实例发现带五级降级链（静态 → mock → 新鲜缓存 → singleflight
-//     Discover → stale 缓存兜底），provider 抖动不断服务
+//   - 实例发现带多级降级链（短路静态 → mock → 新鲜缓存 → singleflight
+//     Discover → stale 缓存兜底 → 兜底静态实例），provider 抖动不断服务；
+//     降级序可配置（WithFallbackOrder / WithStaticFallback），支持
+//     「注册中心优先、静态地址兜底」的生产形态
+//   - 多服务名注册：RegisterAs / DeregisterAs 让同一 SDK 连接注册多个端点名
 //   - 配置热更新（WatchService / OnConfigChange），超时/重试/LB 策略
 //     等运行时生效
 //   - Close 为终结操作：注销监听与订阅、关闭默认路径创建的 SDK 客户端，

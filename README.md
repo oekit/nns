@@ -40,6 +40,48 @@ defer c.Close() // 终结化：注销订阅 + 关闭 SDK 连接（幂等）
 - `ServiceClient()` 是逃生口：暴露底层客户端给适配器与端点工厂
 - bootstrap 集成：`RunWithLifecycle(app, "svc", port, opts...)` 自动注册/注销
 
+## 多端点服务：一次连接注册多个名字
+
+一个服务对外暴露多个端点（HTTP + RPC 双协议，分别注册在短名与完整 RPC
+服务名下）时，用 `RegisterAs` 把每个名字各注册一次即可——**同一个 SDK 连接**，
+不必为每个名字各开一个门面实例（那会翻倍 Nacos gRPC 长连接与后台 goroutine）：
+
+```go
+nnsc := nns.New(cfg)
+// HTTP 端口注册在短名下
+_ = nnsc.RegisterAs(ctx, "shop-http", 8080)
+// RPC 端口注册在完整 RPC 服务名下
+_ = nnsc.RegisterAs(ctx, "com.example.shop.order", 9090)
+// 关停时对称注销（注册了几个名字就要注销几个名字）
+_ = nnsc.DeregisterAs(ctx, "shop-http", 8080)
+_ = nnsc.DeregisterAs(ctx, "com.example.shop.order", 9090)
+```
+
+`RegisterAs` **不要求先 `Init`**（服务名由调用方显式给出）；`Register` 仍走
+`Init` 记录的自身服务名。门面还提供 `Registrar()` / `Discoverer()` 逃生口，
+把「注册什么」交还给调用方，而 SDK 连接与生命周期仍由门面持有。
+
+## 注册中心优先、静态地址兜底
+
+静态实例默认是**短路**语义：配了就直接返回，注册中心不被查询（适合本地开发、
+测试）。生产形态需要「注册中心优先、静态地址兜底」时，用 `WithStaticFallback`
+（单服务）或 `WithFallbackOrder`（全局）：
+
+```go
+// 单服务：静态地址只是最后一层兜底
+c := nns.New(cfg,
+    nns.WithStaticFallback("shop-dep", []registry.Instance{{IP: "10.0.0.1", Port: 9000}}),
+)
+// 全局：所有服务的静态实例都降级为兜底
+c := nns.New(cfg,
+    nns.WithFallbackOrder(client.FallbackRegistryFirst),
+)
+```
+
+注册中心有健康实例时以注册中心为准（静态地址在实例换 IP 后不会跟着变）；
+注册中心冷启动、故障且缓存为空时才用静态地址兜底。缺省仍是静态优先，
+既有调用方行为不变。
+
 ## 边界
 
 - 端点级熔断/换实例重试的 HTTP 工厂在 [nns-endpoint](https://github.com/oekit/nns-endpoint)

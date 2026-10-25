@@ -10,17 +10,29 @@ import (
 // GetInstances 获取服务实例，支持本地缓存和静态配置。
 //
 // 解析优先级（从高到低）：
-//  1. 静态配置（本地开发、测试）
+//  1. 静态配置（本地开发、测试）——**仅在短路语义下**（见 WithStaticInstances
+//     与 WithStaticFallback 的区别）；兜底语义下静态实例不在此步参与
 //  2. Mock 模式（静态或缓存）
 //  3. 新鲜缓存（由 Subscribe 推送或上一次 Discover 填充，在 cacheExpiry 内）
 //  4. 注册中心 Discover（singleflight 保护，避免缓存击穿）
 //  5. Discover 失败时降级使用缓存（含已过期条目）
+//  6. 兜底静态实例（WithStaticFallback / FallbackRegistryFirst）——仅在
+//     注册中心路径拿不到实例时参与
+//
+// 第 6 步让「注册中心优先、静态地址兜底」的生产形态成立：注册中心有健康
+// 实例时以注册中心为准（静态地址在实例换 IP 后不会跟着变），注册中心冷启动
+// 或故障时仍有静态地址兜底。
+//
+// 返回值契约：**空列表 + nil error** 表示「当前无可用实例，由调用方决定
+// 回落」（Mock 模式下未配静态实例的名字即走这条路径）。调用方只判 err 不判
+// len 会把请求路由到空——httpx 的 NNSResolver 判了 len 并回落 baseURL，
+// 本包的契约以此为准。
 func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([]registry.Instance, error) {
-	// 1. 优先使用静态配置（本地开发、测试）
-	c.mu.RLock()
-	static, ok := c.staticInstances[serviceName]
-	c.mu.RUnlock()
-	if ok && len(static) > 0 {
+	// 1. 短路语义的静态配置（本地开发、测试）
+	if c.staticShortCircuits(serviceName) {
+		c.mu.RLock()
+		static := c.staticInstances[serviceName]
+		c.mu.RUnlock()
 		return copyInstances(static), nil
 	}
 
@@ -31,11 +43,16 @@ func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([
 
 	// 3. 新鲜缓存快路径（由 Subscribe 推送或上次 Discover 填充）
 	if cached := c.getInstancesFromCache(serviceName); cached != nil {
-		return cached, nil
+		// 缓存里存着空列表（注册中心当时返回空）时同样走兜底——
+		// 否则「注册中心优先」的服务在第二次调用时会绕过兜底静态
+		return c.withStaticFallback(serviceName, cached), nil
 	}
 
 	// 4. 无 Discoverer（未注入或 provider 构造失败降级）且缓存已过期或为空
 	if c.discoverer == nil {
+		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
+			return fb, nil
+		}
 		return nil, fmt.Errorf("no discoverer available and no cached instances for [%s]", serviceName)
 	}
 
@@ -64,10 +81,16 @@ func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([
 			nnsLog.Warn("discover failed, falling back to stale cache", "service", serviceName, "err", err)
 			return cached, nil
 		}
+		// 6. 兜底静态实例（注册中心不可用且无缓存可用）
+		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
+			nnsLog.Warn("discover failed, falling back to static instances", "service", serviceName, "err", err)
+			return fb, nil
+		}
 		return nil, fmt.Errorf("discover instances [%s]: %w", serviceName, err)
 	}
 
-	return result, nil
+	// 6. 注册中心返回空列表 → 兜底静态实例
+	return c.withStaticFallback(serviceName, result), nil
 }
 
 // GetAllInstances 获取指定服务的全部实例列表（包括不健康的实例）。
