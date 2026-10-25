@@ -1,3 +1,8 @@
+## [v0.5.0] — 2026-10-25
+
+- feat(client): 多端点服务名注册——RegisterAs / DeregisterAs 让同一 SDK 连接注册多个服务名（HTTP + RPC 双端点），新增 Registrar() / Discoverer() 逃生口（#30）
+- feat(client): 注册中心优先、静态地址兜底——新增 FallbackOrder / WithFallbackOrder / WithStaticFallback，GetInstances 降级链扩到六级；既有 WithStaticInstances 短路语义不变，既有调用方零行为变化（#31）
+
 ## [v0.4.4] — 2026-10-21
 
 - 改用嵌套模块 registry/nacos 与 registry/nacosimpl——registry v0.5.0 起不再提供这两个子包（import 路径不变，由独立 module 提供）；registry 地板 v0.4.1 → v0.5.0
