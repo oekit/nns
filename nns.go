@@ -2,6 +2,7 @@ package nns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -332,12 +333,31 @@ func (n *NNSClient) SetStaticInstances(serviceName string, instances []registry.
 // Close 是终结操作：默认路径下 SDK gRPC 连接已关闭，复用需重新 New。
 // 端点工厂自 Round-4 起移至 ekit-nns-endpoint，其生命周期由构造方管理。
 func (n *NNSClient) Close() {
+	// 兼容入口：用有界的默认 ctx（Close 不得无限期挂住）。
+	_ = n.CloseWithContext(context.Background())
+}
+
+// CloseWithContext 关闭并返回错误（ctx 有界）。
+//
+// 与 Close 的差别只有两点：
+//   - **ctx 有界**：关闭流程要调 SDK 的注销订阅 / 停止配置监听，SDK 不响应时
+//     Close 会**永久挂住**（调用方无从得知卡在哪一步）。这里把 ctx 透传给
+//     调用方；Close 走默认 5s 上限。
+//   - **错误不吞**：底层关闭失败原样返回（Close 入口仍只记日志——它没有返回
+//     值可给）。
+//
+// 幂等：与 Close 共享同一个 sync.Once，重复调用只有第一次真正执行。
+func (n *NNSClient) CloseWithContext(ctx context.Context) error {
+	var errs []error
 	n.closeOnce.Do(func() {
-		n.client.Close()
+		if err := n.client.CloseWithContext(ctx); err != nil {
+			errs = append(errs, err)
+		}
 		if n.sdkClose != nil {
 			n.sdkClose()
 		}
 	})
+	return errors.Join(errs...)
 }
 
 // ServiceClient 返回底层 *client.ServiceClient，供 nns/kitex、nns/hertz 等适配器使用。

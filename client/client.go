@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -239,6 +240,23 @@ func (c *ServiceClient) namingAvailable() bool {
 // Nacos SDK 客户端（各持 gRPC 长连接 + 后台 goroutine）。
 // 保证 Close 后实例可安全重建（重新 WatchService/OnConfigChange 不残留旧状态）。
 func (c *ServiceClient) Close() {
+	// 兼容入口：用有界的默认 ctx（Close 不得无限期挂住）。
+	_ = c.CloseWithContext(context.Background())
+}
+
+// CloseWithContext 关闭并返回错误（ctx 有界）。
+//
+// 与 Close 的差别只有两点：
+//   - **ctx 有界**：Close 内部原先用 context.Background() 调 SDK 的
+//     Unsubscribe / StopListenConfig ⇒ SDK 不响应时 Close **永久挂住**
+//     （调用方无从得知卡在哪一步）。这里把 ctx 透传给调用方；Close 走
+//     默认 5s 上限（见 closeDefaultTimeout）。
+//   - **错误不吞**：注销订阅 / 停止配置监听的失败原样返回（Close 入口仍
+//     只记日志——它没有返回值可给）。
+//
+// 幂等：与 Close 共享同一个 sync.Once，重复调用只有第一次真正执行。
+func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
+	var errs []error
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		c.closed = true
@@ -259,25 +277,40 @@ func (c *ServiceClient) Close() {
 		c.instanceCallbacks = make(map[string][]*instanceCallback)
 		c.callbackMu.Unlock()
 
-		ctx := context.Background()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		closeCtx, cancel := context.WithTimeout(ctx, closeDefaultTimeout)
+		defer cancel()
+
 		// 实例订阅注销：此前只停配置监听，SDK 侧订阅残留，
 		// 推送回调依旧激活（Close 后仍改内部状态）
 		if c.subscriber != nil && !c.mockMode {
 			for _, svc := range subscribed {
-				if err := c.subscriber.Unsubscribe(ctx, svc); err != nil {
+				if err := c.subscriber.Unsubscribe(closeCtx, svc); err != nil {
 					nnsLog.Warn("unsubscribe failed on close", "service", svc, "err", err)
+					errs = append(errs, fmt.Errorf("unsubscribe %s: %w", svc, err))
 				}
 			}
 		}
 		if c.configStore != nil {
 			for _, svc := range services {
-				if err := c.configStore.StopListenConfig(ctx, svc, c.configGroup); err != nil {
+				if err := c.configStore.StopListenConfig(closeCtx, svc, c.configGroup); err != nil {
 					nnsLog.Warn("stop listen config failed", "service", svc, "err", err)
+					errs = append(errs, fmt.Errorf("stop listen config %s: %w", svc, err))
 				}
 			}
 		}
 	})
+	return errors.Join(errs...)
 }
+
+// closeDefaultTimeout 是 Close（无 ctx 入口）内部使用的默认上限。
+//
+// 关闭流程要调 SDK 的 Unsubscribe / StopListenConfig，这些调用在 SDK 不响应
+// 时会一直阻塞 ⇒ Close 永久挂住、调用方无从得知卡在哪一步。给一个有限的上限，
+// 宁可「关不干净但返回」也不要「永远挂着」。
+const closeDefaultTimeout = 5 * time.Second
 
 // MockMode 返回是否处于 Mock 模式。供 transport 适配器区分
 // "mock 静默跳过"与"降级（registrar 不可用）"两种 registrar==nil 场景。
