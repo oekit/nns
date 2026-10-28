@@ -171,7 +171,19 @@ func (sb *ServiceBasic) GetEndpoints() []Endpoint {
 	return eps
 }
 
-// GetTimeoutRetryConfig 根据协议、服务名和接口名获取超时重试配置。
+// GetTimeoutRetryConfig 按**接口名**获取超时重试配置，返回 (timeout, retry, hit)。
+//
+// ⚠️ **只有 api 参与匹配**：规则项 `TimeoutRetry` 只有 `Api`/`Type` 两个维度，
+// **没有协议与服务名字段**，因此 protocol 与 serviceName 当前无法参与匹配。
+// 此前本函数的文档写的是「根据协议、服务名和接口名获取」——与实现不符
+// （2/3 的参数被静默忽略），照文档理解会以为「换个协议查到的规则不同」，
+// 实际拿到的是同一条规则。
+//
+// 两个参数保留是为了将来规则项支持协议/服务名维度后不必改签名；届时本函数
+// 的匹配口径会变（当前不参与匹配）。
+//
+// 命中条件：存在一条 Enable 为 true 且 Api == api 的规则。命中返回该规则的
+// timeout/retry；未命中返回 (0, 0, false)。
 func (sb *ServiceBasic) GetTimeoutRetryConfig(protocol, serviceName, api string) (timeout int, retry int, hit bool) {
 	if sb == nil {
 		return
