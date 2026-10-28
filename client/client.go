@@ -62,10 +62,20 @@ type ServiceClient struct {
 	// 服务实例变更回调：存指针包装（Go 函数不可比较，指针可按身份删除），
 	// 并发订阅同一服务时单方失败只回滚自身、不抹掉他方已注册的回调
 	instanceCallbacks map[string][]*instanceCallback
-	// 已向 provider 注册 SDK 监听的服务集合（SubscribeService 去重，
+	// 已**成功**向 provider 注册 SDK 监听的服务集合（SubscribeService 去重，
 	// 避免 N 次订阅 → 每次推送触发 N² 次回调）
 	subscribedServices map[string]bool
-	callbackMu         sync.RWMutex
+	// subscribing 记录**正在注册** SDK 监听的服务。
+	//
+	// subscribedServices 只在注册**成功后**置位；注册期间用这个独立的
+	// 「注册中」状态把两者分开。否则后到的并发订阅方会看到
+	// subscribedServices 已置位 ⇒ 走去重路径直接返回 success；可前一个的
+	// 注册随后**失败**并回滚 ⇒ 后一个以为订阅成功、实际没人注册监听 ⇒
+	// 它的回调永远不会再被触发（永久失联）。
+	//
+	// 后到者改为等待在途注册的结果：成功则复用，失败则由它接手重试。
+	subscribing map[string]*subscribeCall
+	callbackMu  sync.RWMutex
 
 	// 生命周期：closed 由 c.mu 保护（WatchService 竞态检查用），
 	// closeOnce 保证 Close 幂等。默认路径 SDK 客户端的所有权在 nns 门面
@@ -190,6 +200,14 @@ type instanceCallback struct {
 	fn func([]registry.Instance)
 }
 
+// subscribeCall 是一次「向 provider 注册 SDK 监听」的进行中状态。
+//
+// done 关闭即表示该次注册**已有结果**（成功或失败）；等待者醒来后重新决策
+// （读 subscribedServices / subscribing），而不是直接照抄结论。
+type subscribeCall struct {
+	done chan struct{}
+}
+
 // New 创建一个独立的 ServiceClient 实例（provider 无关）。
 //
 // 每次调用都返回全新实例，互不影响。本包不绑定任何注册中心 provider：
@@ -203,6 +221,7 @@ func New(opts ...ClientOption) *ServiceClient {
 		watchedServices:    make(map[string]bool),
 		instanceCallbacks:  make(map[string][]*instanceCallback),
 		subscribedServices: make(map[string]bool),
+		subscribing:        make(map[string]*subscribeCall),
 		instanceCache:      make(map[string][]registry.Instance),
 		cacheLastUpdate:    make(map[string]time.Time),
 		staticInstances:    make(map[string][]registry.Instance),
@@ -272,6 +291,13 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 		subscribed := make([]string, 0, len(c.subscribedServices))
 		for svc := range c.subscribedServices {
 			subscribed = append(subscribed, svc)
+		}
+		// 在途注册也要注销：注册方可能正在 provider 侧建立监听，
+		// Close 时只清本地标记 ⇒ 监听残留（Close 后仍在推送）。
+		for svc := range c.subscribing {
+			if _, ok := c.subscribedServices[svc]; !ok {
+				subscribed = append(subscribed, svc)
+			}
 		}
 		c.subscribedServices = make(map[string]bool)
 		c.instanceCallbacks = make(map[string][]*instanceCallback)
