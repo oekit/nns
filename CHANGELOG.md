@@ -1,3 +1,7 @@
+## [v0.5.3] — 2026-10-28
+
+- fix(client): `SubscribeService` 的 check-then-act 竞态——`subscribedServices` 在调用 provider **之前**就置位 ⇒ 后到的并发订阅方直接返回 success，可前一个注册随后失败并回滚 ⇒ 后一个以为订阅成功、实际没人注册监听 ⇒ 回调永远不再被触发（永久失联）。修法：拆出「注册中」状态（`subscribing`），后到者等待在途注册的结果，失败则接手重试；多个等待者同时醒来时只有一个能拿到注册资格 ⇒ provider 只被注册一次
+
 ## [v0.5.2] — 2026-10-28
 
 - fix(metadata): `GetTimeoutRetryConfig(protocol, serviceName, api)` 的文档写「根据协议、服务名和接口名获取超时重试配置」，但规则项 `TimeoutRetry` 只有 `Api`/`Type` 两个维度、**没有协议与服务名字段** ⇒ protocol 与 serviceName 两个参数被**静默忽略**。照文档理解会以为「换个协议查到的规则不同」，实际拿到的是同一条规则。文档改为写明真实匹配口径（只有 api 参与匹配）并说明两个参数为何保留；加用例把该口径钉成可执行的事实（文档若改成参与匹配，用例当场红）
