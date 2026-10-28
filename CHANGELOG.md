@@ -4,7 +4,7 @@
 
 ## [v0.5.1] — 2026-10-28
 
-- fix(nns): 关闭流程的 ctx **无界** ⇒ SDK 不响应时 `Close()` 永久挂住（关闭流程要调 SDK 的 `Unsubscribe`/`StopListenConfig`，此前内部用 `context.Background()`，调用方既拿不到返回值也无从得知卡在哪一步）；且关闭错误只记日志、调用方拿不到任何错误。新增 `CloseWithContext(ctx) error`（`NNSClient` 与 `client.ServiceClient` 各一个）：ctx 透传给调用方、`Close()` 入口走默认 5s 上限、关闭错误原样返回。**`Close()` 签名与幂等语义不变**（无参、共享同一个 `sync.Once`），无 breaking 变更
+- fix(nns): 关闭流程的 ctx **无界** ⇒ SDK 不响应时 `Close()` 永久挂住（关闭流程要调 SDK 的 `Unsubscribe`/`StopListenConfig`，此前内部用 `context.Background()`，调用方既拿不到返回值也无从得知卡在哪一步）；且关闭错误只记日志、调用方拿不到任何错误。新增 `CloseWithContext(ctx) error`（`NNSClient` 与 `client.ServiceClient` 各一个）：ctx 透传给调用方、`Close()` 入口走默认 5s 上限、关闭错误原样返回。**`Close()` 签名与幂等语义不变**（仍是无参、共享同一个 `sync.Once`），消费方不需要改调用点
 
 ## [v0.5.0] — 2026-10-25
 
