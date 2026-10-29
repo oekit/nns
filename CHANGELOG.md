@@ -1,3 +1,7 @@
+## [v0.5.4] — 2026-10-29
+
+- build: 依赖地板对齐——concurrency 抬到 v0.23.2
+
 ## [v0.5.3] — 2026-10-28
 
 - fix(client): `SubscribeService` 的 check-then-act 竞态——`subscribedServices` 在调用 provider **之前**就置位 ⇒ 后到的并发订阅方直接返回 success，可前一个注册随后失败并回滚 ⇒ 后一个以为订阅成功、实际没人注册监听 ⇒ 回调永远不再被触发（永久失联）。修法：拆出「注册中」状态（`subscribing`），后到者等待在途注册的结果，失败则接手重试；多个等待者同时醒来时只有一个能拿到注册资格 ⇒ provider 只被注册一次
