@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/nns
 
 > NNS 服务治理客户端——provider 无关发现/配置/实例缓存
-> 当前版本：`v0.5.3` · module：`github.com/oekit/nns` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> 当前版本：`v0.5.4` · module：`github.com/oekit/nns` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`client/`、`metadata/`
