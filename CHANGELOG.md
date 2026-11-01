@@ -1,3 +1,7 @@
+## [v0.5.5] — 2026-11-01
+
+- fix(nns): LocalServiceInit 元数据解析失败降级而非硬失败（dataId 撞车不再拖垮整个服务发现）
+
 ## [v0.5.4] — 2026-10-29
 
 - build: 依赖地板对齐——concurrency 抬到 v0.23.2
