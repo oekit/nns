@@ -1,3 +1,7 @@
+## [v0.5.6] — 2026-11-02
+
+- 抬嵌套模块地板 github.com/oekit/registry/nacosimpl v0.1.0 → v0.1.1（oekit/oekit#104）
+
 ## [v0.5.5] — 2026-11-01
 
 - fix(nns): LocalServiceInit 元数据解析失败降级而非硬失败（dataId 撞车不再拖垮整个服务发现）
