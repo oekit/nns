@@ -128,12 +128,15 @@ func WithMockMode(enabled bool) ClientOption {
 //
 // 同一服务上与 WithStaticFallback 重复配置时以最后一次调用为准——本选项把
 // 该服务恢复为短路语义。
+//
+// 权重与注册侧同口径：Weight<=0（漏配或显式 0）回填默认权重 10，
+// 显式正权重原样保留——见 normalizeStaticInstances。
 func WithStaticInstances(serviceName string, instances []registry.Instance) ClientOption {
 	return func(c *ServiceClient) {
 		if c.staticInstances == nil {
 			c.staticInstances = make(map[string][]registry.Instance)
 		}
-		c.staticInstances[serviceName] = instances
+		c.staticInstances[serviceName] = normalizeStaticInstances(instances)
 		if c.fallbackOnly != nil {
 			delete(c.fallbackOnly, serviceName)
 		}

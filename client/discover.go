@@ -158,6 +158,29 @@ func (c *ServiceClient) cacheLookup(serviceName string, ignoreExpiry bool) []reg
 	return copyInstances(instances)
 }
 
+// defaultStaticWeight 是静态实例的默认权重，与注册侧口径一致：
+// registry.Apply 的 RegisterOption.Weight 默认 10，registry.InfoFrom 对
+// weight<=0 回退 defaultWeight（注册侧传入同为 10）。
+const defaultStaticWeight = 10
+
+// normalizeStaticInstances 归一化静态实例列表：拷贝入参（避免调用方后续
+// 修改污染内部静态表），并对 Weight<=0 的实例回填 defaultStaticWeight。
+//
+// 与注册侧对称（registry.Apply / registry.InfoFrom 的 defaultWeight=10）：
+// 静态配置漏写权重字段不等于「摘流」——kitex 加权均衡（weighted_balancer）
+// 对 weight<=0 的实例整只跳过，不回填会让「漏配一个字段」静默变成
+// 「无可用实例」。静态实例入口不提供「零权重 = drain」语义，需要摘流
+// 请直接移除实例。
+func normalizeStaticInstances(instances []registry.Instance) []registry.Instance {
+	result := copyInstances(instances)
+	for i := range result {
+		if result[i].Weight <= 0 {
+			result[i].Weight = defaultStaticWeight
+		}
+	}
+	return result
+}
+
 // copyInstances 深拷贝实例列表（含 Metadata map），
 // 避免调用方修改污染内部缓存或静态配置。
 func copyInstances(instances []registry.Instance) []registry.Instance {
