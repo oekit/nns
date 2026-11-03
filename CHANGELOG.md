@@ -1,3 +1,9 @@
+## [v0.5.7] — 2026-11-03
+
+- fix(nns): 静态实例 Weight<=0 统一回填默认权重 10——与 registry.Apply/InfoFrom 同口径，漏配一字段不再「无可用实例」（#61）
+
+关联问题单：nns#61。
+
 ## [v0.5.6] — 2026-11-02
 
 - 抬嵌套模块地板 github.com/oekit/registry/nacosimpl v0.1.0 → v0.1.1（oekit/oekit#104）
