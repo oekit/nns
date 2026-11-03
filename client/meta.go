@@ -154,20 +154,22 @@ func (c *ServiceClient) GetDepService() map[string]*metadata.ServiceBasic {
 	return out
 }
 
-// AddStaticInstance 添加静态服务实例
+// AddStaticInstance 添加静态服务实例。
+// 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
 func (c *ServiceClient) AddStaticInstance(serviceName string, instances ...registry.Instance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], instances...)
+	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], normalizeStaticInstances(instances)...)
 	nnsLog.Info("added static instances", "service", serviceName, "count", len(instances))
 }
 
-// SetStaticInstances 设置静态服务实例（覆盖）
+// SetStaticInstances 设置静态服务实例（覆盖）。
+// 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
 func (c *ServiceClient) SetStaticInstances(serviceName string, instances []registry.Instance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.staticInstances[serviceName] = instances
+	c.staticInstances[serviceName] = normalizeStaticInstances(instances)
 	nnsLog.Info("set static instances", "service", serviceName, "count", len(instances))
 }

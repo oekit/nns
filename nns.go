@@ -58,6 +58,10 @@ func WithMockMode(enabled bool) NNSOption {
 // 默认是**短路**语义：配了该服务的静态实例后，GetInstances 直接返回它们，
 // 不再查询注册中心。需要「注册中心优先、静态地址兜底」的生产形态请用
 // WithStaticFallback（或全局 WithFallbackOrder(FallbackRegistryFirst)）。
+//
+// 权重与注册侧同口径：Weight<=0（漏配或显式 0）回填默认权重 10
+// （对齐 registry.Apply / registry.InfoFrom 的 defaultWeight），避免零权重
+// 被下游加权均衡整只跳过变成「无可用实例」；显式正权重原样保留。
 func WithStaticInstance(serviceName string, instances []registry.Instance) NNSOption {
 	return func(o *clientOptions) {
 		if o.staticInstances == nil {
@@ -83,6 +87,8 @@ func WithStaticInstance(serviceName string, instances []registry.Instance) NNSOp
 // 故障时才用静态地址兜底。
 //
 // 同一服务上重复配置以最后一次调用为准。
+//
+// 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func WithStaticFallback(serviceName string, instances []registry.Instance) NNSOption {
 	return func(o *clientOptions) {
 		if o.staticInstances == nil {
@@ -319,11 +325,13 @@ func (n *NNSClient) Unsubscribe(ctx context.Context, serviceName string) error {
 }
 
 // AddStaticInstance 向指定服务追加静态实例地址。
+// 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func (n *NNSClient) AddStaticInstance(serviceName string, instances ...registry.Instance) {
 	n.client.AddStaticInstance(serviceName, instances...)
 }
 
 // SetStaticInstances 设置指定服务的静态实例列表（覆盖原有）。
+// 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func (n *NNSClient) SetStaticInstances(serviceName string, instances []registry.Instance) {
 	n.client.SetStaticInstances(serviceName, instances)
 }

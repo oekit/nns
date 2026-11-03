@@ -66,12 +66,15 @@ func WithFallbackOrder(order FallbackOrder) ClientOption {
 //
 // 同一服务上重复配置以最后一次调用为准：WithStaticFallback 与
 // WithStaticInstances 写同一份静态实例表，前者把该服务标记为兜底语义。
+//
+// 权重与注册侧同口径：Weight<=0（漏配或显式 0）回填默认权重 10，
+// 显式正权重原样保留——见 normalizeStaticInstances。
 func WithStaticFallback(serviceName string, instances []registry.Instance) ClientOption {
 	return func(c *ServiceClient) {
 		if c.staticInstances == nil {
 			c.staticInstances = make(map[string][]registry.Instance)
 		}
-		c.staticInstances[serviceName] = instances
+		c.staticInstances[serviceName] = normalizeStaticInstances(instances)
 		if c.fallbackOnly == nil {
 			c.fallbackOnly = make(map[string]bool)
 		}

@@ -161,3 +161,28 @@ func TestClose_NilSafe(t *testing.T) {
 	c.Close()
 	c.Close()
 }
+
+// TestStaticInstance_OmittedWeightUsable 回归（#61）：门面入口配置静态实例
+// 漏写权重字段时，实例不再是「无可用实例」——权重回填为默认 10（与
+// registry.Apply / registry.InfoFrom 的 defaultWeight 同口径），下游加权
+// 均衡（kitex weighted_balancer 对 weight<=0 整只跳过）可见可用。
+func TestStaticInstance_OmittedWeightUsable(t *testing.T) {
+	c := New(
+		nacospkg.Bootstrap{},
+		WithMockMode(true),
+		WithStaticInstance("svc", []registry.Instance{
+			{IP: "10.0.0.1", Port: 8080}, // 漏配 Weight 字段
+		}),
+	)
+
+	inst, err := c.GetInstances(context.Background(), "svc")
+	if err != nil {
+		t.Fatalf("GetInstances error: %v", err)
+	}
+	if len(inst) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(inst))
+	}
+	if inst[0].Weight <= 0 {
+		t.Errorf("Weight = %v, want > 0 (zero weight would be silently dropped by weighted balancer)", inst[0].Weight)
+	}
+}
