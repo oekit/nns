@@ -5,10 +5,10 @@ go 1.24.0
 require (
 	github.com/oekit/concurrency v0.25.1
 	github.com/oekit/core v0.12.2
-	github.com/oekit/logx v0.8.3
+	github.com/oekit/logx v0.8.4
 	github.com/oekit/registry v0.5.4
-	github.com/oekit/registry/nacos v0.1.5
-	github.com/oekit/registry/nacosimpl v0.1.6
+	github.com/oekit/registry/nacos v0.1.7
+	github.com/oekit/registry/nacosimpl v0.1.7
 )
 
 require (
