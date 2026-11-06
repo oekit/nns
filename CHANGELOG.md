@@ -1,3 +1,10 @@
+## [v0.5.9] — 2026-11-06
+
+- **BREAKING** fix(client): mock/未启用注册发现时 Register/Deregister 改为幂等 no-op success（[#66](https://github.com/oekit/nns/issues/66)）——此前返回 ErrRegistrarUnavailable，消费方无法区分「真故障」与「本来就没注册器」，被迫自维护 `Enabled && !MockMode` 门控布尔并保证注册/注销对称（每个用 nns 的服务重复这套判断；octopus main.go 的 nnsSelfRegister 布尔即此形态）。修法（issue 方案 2）：没注册器 = 幂等 no-op success（与 `nns.enabled: false` 的「不注册」语义对齐，mock 开箱即用）；真故障（Nacos 连不上）走 registrar 内部 error 路径仍可区分。**升级可见**：依赖 ErrRegistrarUnavailable 判定的消费方需改为直接调用（no-op 已成功）；哨兵保留供兼容
+- fix(client): 注册路径拒绝回环 Pod IP（[#68](https://github.com/oekit/nns/issues/68)）——`GetPodIP` 的 127.0.0.1 静默回退（网卡枚举失败）被注册链直接消费：实例以回环地址进 Nacos，discover 拿到永远拨不通的地址，根因被彻底掩盖——注册一个不可达的地址比注册失败更坏。修法：`buildInstance` 对 ""/127.0.0.1/::1 报错拒注册（错误信息点名「网卡枚举失败，请显式指定 host ip」）；回退在 GetPodIP 仍是已声明行为，只在注册消费面拒绝
+
+关联问题单：nns#66、nns#68。
+
 ## [v0.5.8] — 2026-11-06
 
 - build: 矩阵依赖地板对齐（维护轮 #233）

@@ -229,11 +229,12 @@ func TestRegister(t *testing.T) {
 	}
 }
 
-func TestRegister_NoRegistrar_Error(t *testing.T) {
-	c := newTestClient(t)
-	err := c.Register(context.Background(), 8080)
-	if err == nil {
-		t.Fatal("expected error when registrar is nil")
+func TestRegister_NoRegistrar_NoOpSuccess(t *testing.T) {
+	// #66 行为变更：「没注册器」（mock/未启用）= 幂等 no-op success——
+	// 「本来就没注册」不是故障，消费方不再需要自维护门控布尔。
+	c := &ServiceClient{}
+	if err := c.Register(context.Background(), 8080); err != nil {
+		t.Fatalf("no registrar should be no-op success, got %v", err)
 	}
 }
 
