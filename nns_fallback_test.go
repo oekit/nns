@@ -88,13 +88,17 @@ func TestStaticFallback_LastCallWins(t *testing.T) {
 	}
 }
 
-// TestRegisterAs_NoRegistrar_Error 验证门面在无 registrar 时报错。
-func TestRegisterAs_NoRegistrar_Error(t *testing.T) {
+// TestRegisterAs_NoRegistrar_NoOpSuccess 验证门面在无 registrar（mock 模式）时
+// no-op success（#66 行为变更：「本来就没注册」不是错误，mock 开箱即用）。
+func TestRegisterAs_NoRegistrar_NoOpSuccess(t *testing.T) {
 	c := New(nacospkg.Bootstrap{ServiceName: "svc"}, WithMockMode(true))
 
-	err := c.RegisterAs(context.Background(), "http-svc", 8080)
-	if !errors.Is(err, client.ErrRegistrarUnavailable) {
-		t.Fatalf("err = %v, want %v", err, client.ErrRegistrarUnavailable)
+	if err := c.RegisterAs(context.Background(), "http-svc", 8080); err != nil {
+		t.Fatalf("mock 模式 Register 应 no-op success, got %v", err)
+	}
+	// 注销对称：同样 no-op success
+	if err := c.DeregisterAs(context.Background(), "http-svc", 8080); err != nil {
+		t.Fatalf("mock 模式 Deregister 应 no-op success, got %v", err)
 	}
 }
 

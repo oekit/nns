@@ -3,9 +3,13 @@ package client
 import (
 	"context"
 	"fmt"
+
 	"github.com/oekit/core/network"
+	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 )
+
+var log = logx.Delegating("nns/client")
 
 // Register 向注册中心注册当前服务实例。
 //
@@ -13,14 +17,24 @@ import (
 // GetPodIP 探测本机 IP。opts 控制权重、元数据等注册选项。
 func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
 	if c.registrar == nil {
-		return ErrRegistrarUnavailable
+		// #66：「没注册器」（mock 模式/未启用注册发现）不是错误——幂等 no-op
+		// success，与 nns.enabled:false 的「不注册」语义对齐（mock 开箱即用）；
+		// 真故障（Nacos 连不上）走 registrar 内部 error 路径仍可区分。消费方
+		// 不再需要自维护 Enabled&&!Mock 门控布尔并保证注册/注销对称。
+		log.Info("no registrar configured (mock or discovery disabled), register is a no-op",
+			"port", port)
+		return nil
 	}
 	name := c.getSelfServiceName()
 	if name == "" {
 		return fmt.Errorf("nns/client: service name unknown; call Init/LocalServiceInit before Register")
 	}
 
-	return c.registrar.Register(ctx, c.buildInstance(name, port, opts...))
+	inst, err := c.buildInstance(name, port, opts...)
+	if err != nil {
+		return err
+	}
+	return c.registrar.Register(ctx, inst)
 }
 
 // RegisterAs 向注册中心注册当前服务实例到**指定服务名**下。
@@ -46,10 +60,16 @@ func (c *ServiceClient) RegisterAs(ctx context.Context, serviceName string, port
 		return ErrServiceNameRequired
 	}
 	if c.registrar == nil {
-		return ErrRegistrarUnavailable
+		// #66：同 Register——no-op success（幂等，注销对称性不再依赖调用方纪律）
+		log.Info("no registrar configured (mock or discovery disabled), deregister is a no-op")
+		return nil
 	}
 
-	return c.registrar.Register(ctx, c.buildInstance(serviceName, port, opts...))
+	inst, err := c.buildInstance(serviceName, port, opts...)
+	if err != nil {
+		return err
+	}
+	return c.registrar.Register(ctx, inst)
 }
 
 // Deregister 从注册中心注销当前服务实例。
@@ -58,7 +78,11 @@ func (c *ServiceClient) Deregister(ctx context.Context, port int, opts ...regist
 		return nil
 	}
 
-	return c.registrar.Deregister(ctx, c.buildInstance(c.getSelfServiceName(), port, opts...))
+	inst, err := c.buildInstance(c.getSelfServiceName(), port, opts...)
+	if err != nil {
+		return err
+	}
+	return c.registrar.Deregister(ctx, inst)
 }
 
 // DeregisterAs 从注册中心注销指定服务名下的当前服务实例。
@@ -77,20 +101,32 @@ func (c *ServiceClient) DeregisterAs(ctx context.Context, serviceName string, po
 		return nil
 	}
 
-	return c.registrar.Deregister(ctx, c.buildInstance(serviceName, port, opts...))
+	inst, err := c.buildInstance(serviceName, port, opts...)
+	if err != nil {
+		return err
+	}
+	return c.registrar.Deregister(ctx, inst)
 }
 
 // buildInstance 构造注册实例：服务名与端口由调用方给出，IP 取本机
 // Pod IP，权重/元数据/分组/集群取自 opts。
-func (c *ServiceClient) buildInstance(serviceName string, port int, opts ...registry.RegisterOptionFunc) registry.Instance {
+func (c *ServiceClient) buildInstance(serviceName string, port int, opts ...registry.RegisterOptionFunc) (registry.Instance, error) {
 	opt := registry.Apply(opts...)
+	ip := network.GetPodIP()
+	// #68：注册路径拒绝回环地址——GetPodIP 的 127.0.0.1 静默回退（网卡枚举
+	// 失败）在注册消费链上必须显式失败：注册一个永远不可达的回环地址比注册
+	// 失败更坏（discover 拿到拨不通的实例，根因被彻底掩盖）。
+	if ip == "" || ip == "127.0.0.1" || ip == "::1" {
+		return registry.Instance{}, fmt.Errorf(
+			"nns/client: refusing to register loopback/empty Pod IP %q for %s (nic enumeration likely failed; set host ip explicitly)", ip, serviceName)
+	}
 	return registry.Instance{
 		Service:  serviceName,
-		IP:       network.GetPodIP(),
+		IP:       ip,
 		Port:     port,
 		Weight:   opt.Weight,
 		Metadata: opt.Metadata,
 		Group:    opt.Group,
 		Cluster:  opt.Cluster,
-	}
+	}, nil
 }

@@ -184,11 +184,15 @@ func TestDeregisterAs_NoRegistrar_NoError(t *testing.T) {
 	}
 }
 
-func TestRegisterAs_NoRegistrar_Error(t *testing.T) {
-	c := newTestClient(t)
-	err := c.RegisterAs(context.Background(), "http-svc", 8080)
-	if !errors.Is(err, ErrRegistrarUnavailable) {
-		t.Fatalf("err = %v, want %v", err, ErrRegistrarUnavailable)
+func TestRegisterAs_NoRegistrar_NoOpSuccess(t *testing.T) {
+	// #66 行为变更：no registrar = 幂等 no-op success（原断言期望
+	// ErrRegistrarUnavailable——「没注册器」不是错误）。
+	c := &ServiceClient{}
+	if err := c.RegisterAs(context.Background(), "svc-x", 8080); err != nil {
+		t.Fatalf("no registrar should be no-op success, got %v", err)
+	}
+	if !errors.Is(ErrRegistrarUnavailable, ErrRegistrarUnavailable) {
+		t.Fatal("sentinel must stay for compat")
 	}
 }
 
