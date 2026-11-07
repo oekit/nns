@@ -1,3 +1,7 @@
+## [v0.5.11] — 2026-11-08
+
+- build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
+
 ## [v0.5.10] — 2026-11-07
 
 - fix(client): Register/RegisterAs 成功后缓存实例快照——Deregister 不再重新推导身份，IP/Group 漂移不再静默注销失败（#75）
