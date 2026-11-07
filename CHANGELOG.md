@@ -1,3 +1,11 @@
+## [v0.5.10] — 2026-11-07
+
+- fix(client): Register/RegisterAs 成功后缓存实例快照——Deregister 不再重新推导身份，IP/Group 漂移不再静默注销失败（#75）
+- docs(client): RunWithLifecycle 调用顺序契约修正——server 先注册再 RunWithLifecycle，关停序「先反注册后关 server」兑现（#76）
+- fix(nns): GetService 返回真实错误 + 新增 ServiceConfig（错误不吞、ErrConfigStoreUnavailable 哨兵）；Required 注册失败中止启动的部分在 bootstrap/nacos 侧落地（PR #106）（#77）
+
+关联问题单：nns#75、nns#76、nns#77。
+
 ## [v0.5.9] — 2026-11-06
 
 - **BREAKING** fix(client): mock/未启用注册发现时 Register/Deregister 改为幂等 no-op success（[#66](https://github.com/oekit/nns/issues/66)）——此前返回 ErrRegistrarUnavailable，消费方无法区分「真故障」与「本来就没注册器」，被迫自维护 `Enabled && !MockMode` 门控布尔并保证注册/注销对称（每个用 nns 的服务重复这套判断；octopus main.go 的 nnsSelfRegister 布尔即此形态）。修法（issue 方案 2）：没注册器 = 幂等 no-op success（与 `nns.enabled: false` 的「不注册」语义对齐，mock 开箱即用）；真故障（Nacos 连不上）走 registrar 内部 error 路径仍可区分。**升级可见**：依赖 ErrRegistrarUnavailable 判定的消费方需改为直接调用（no-op 已成功）；哨兵保留供兼容
