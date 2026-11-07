@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -166,6 +167,103 @@ func TestRunWithLifecycle_OptsReused(t *testing.T) {
 	if fr.Deregistered[0].Metadata["region"] != "cn-east" {
 		t.Errorf("deregistered metadata region = %v, want cn-east",
 			fr.Deregistered[0].Metadata["region"])
+	}
+}
+
+// orderedApp 按 AddResource 注册顺序记录 closer,closeAll 按注册**逆序**执行
+// (镜像 bootstrap.App.closeAll 的释放约定),记录实际执行序——用于钉住
+// RunWithLifecycle 的关停序契约(#76)。
+type orderedApp struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	names   []string
+	closers map[string]func(context.Context) error
+	closed  []string
+}
+
+func newOrderedApp() *orderedApp {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &orderedApp{
+		ctx:     ctx,
+		cancel:  cancel,
+		closers: make(map[string]func(context.Context) error),
+	}
+}
+
+func (f *orderedApp) Context() context.Context { return f.ctx }
+func (f *orderedApp) AddResource(name string, closer func(context.Context) error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.names = append(f.names, name)
+	f.closers[name] = closer
+}
+func (f *orderedApp) GoBackground(_ string, _ func(context.Context)) {}
+func (f *orderedApp) RequestShutdown()                               { f.cancel() }
+
+// closeAll 逆序执行全部 closer 并记录执行序(bootstrap.App.closeAll 同语义)。
+func (f *orderedApp) closeAll(ctx context.Context) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.names) - 1; i >= 0; i-- {
+		name := f.names[i]
+		_ = f.closers[name](ctx)
+		f.closed = append(f.closed, name)
+	}
+	return f.closed
+}
+
+// TestRunWithLifecycle_ServerFirst_DeregisterClosesBeforeServer 钉住 #76 契约:
+// 按文档推荐顺序(server 先注册 closer,再调 RunWithLifecycle)时,关停的逆序
+// 执行下 nns-deregister **先于** server 关闭——先从注册中心摘流量,再停监听
+// (对齐 bootstrap/nacos 组件与 go-kratos Stop 语义)。
+func TestRunWithLifecycle_ServerFirst_DeregisterClosesBeforeServer(t *testing.T) {
+	fr := &fakeRegistrar{}
+	nnsc := New(WithRegistrar(fr))
+	defer nnsc.Close()
+
+	fa := newOrderedApp()
+	defer fa.cancel()
+
+	// 模拟 hertz/kitex RunServer:第一步经 app.AddResource 注册 server closer
+	fa.AddResource("server", func(context.Context) error { return nil })
+
+	if err := nnsc.RunWithLifecycle(fa, "test-svc", 8080); err != nil {
+		t.Fatalf("RunWithLifecycle: %v", err)
+	}
+
+	got := fa.closeAll(context.Background())
+	want := []string{"test-svc-nns-deregister", "server"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("close order = %v, want %v (deregister 必须先于 server 关闭)", got, want)
+	}
+	if len(fr.Deregistered) != 1 {
+		t.Errorf("expected 1 Deregister during close, got %d", len(fr.Deregistered))
+	}
+}
+
+// TestRunWithLifecycle_AntiPattern_ServerClosesFirst 钉住 #76 反例(旧文档示例
+// 的顺序):先 RunWithLifecycle 再启动 server 时,关停逆序执行下 server **先于**
+// 反注册关闭——窗口内 LB 仍把流量路由到已停止监听的实例。这是文档契约
+// (#76)明令禁止的调用顺序,此测试留存其机理作反面教材。
+func TestRunWithLifecycle_AntiPattern_ServerClosesFirst(t *testing.T) {
+	fr := &fakeRegistrar{}
+	nnsc := New(WithRegistrar(fr))
+	defer nnsc.Close()
+
+	fa := newOrderedApp()
+	defer fa.cancel()
+
+	// 反例:先调 RunWithLifecycle,再启动 server(注册 server closer)
+	if err := nnsc.RunWithLifecycle(fa, "test-svc", 8080); err != nil {
+		t.Fatalf("RunWithLifecycle: %v", err)
+	}
+	fa.AddResource("server", func(context.Context) error { return nil })
+
+	got := fa.closeAll(context.Background())
+	want := []string{"server", "test-svc-nns-deregister"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("close order = %v, want %v (反例下 server 先关——即 #76 要杜绝的窗口)", got, want)
 	}
 }
 

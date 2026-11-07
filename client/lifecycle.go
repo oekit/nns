@@ -10,17 +10,33 @@ import (
 // RunWithLifecycle 向注册中心注册当前服务实例,并通过 lifecycle.App 注册
 // Deregister 作为优雅关闭时的 closer,业务无需手写 Register + Deregister 对称调用。
 //
-// 业务使用(在 bootstrap.Run userFn 内):
+// # 调用顺序契约(#76):必须在 server 资源注册**之后**调用
+//
+// lifecycle.App 的 closer 按注册**逆序**执行。本方法注册的 deregister
+// closer 要在关停时**先于** server.Shutdown 执行(先摘流量再停监听,对齐
+// bootstrap/nacos 组件与 go-kratos Stop 语义),因此 deregister closer 必须
+// **晚于** server 的 closer 注册——即先启动 server(hertz/kitex RunServer
+// 内部经 app.AddResource 注册 server.Shutdown),再调本方法:
 //
 //	b, _ := bootstrap.New(bootstrap.WithServiceName("svc")) // + nacos/obs WithXxx 按需注入
 //	b.Run(func(app *bootstrap.App) error {
 //	    nnsc := nns.New(nacosBootstrap, opts...)  // 门面负责 provider 默认构造
+//	    h := server.New(server.WithHostPorts(":8080"))
+//	    hertz.RunServer(app, "hertz", h,
+//	        hertz.WithOnReady(func(ctx context.Context) { app.Ready() }))
+//	    // ⚠️ 必须在 RunServer 之后:server closer 先注册 ⇒ 关停逆序执行时
+//	    // nns-deregister 先于 server.Shutdown(先摘流量,再停监听)。
 //	    if err := nnsc.RunWithLifecycle(app, "my-svc", 8080); err != nil {
 //	        return err
 //	    }
-//	    // ... 启动 server,等待优雅关闭
+//	    <-app.Context().Done() // 阻塞直到优雅关闭
 //	    return nil
 //	})
+//
+// 反例(旧示例的写法,勿用):先 RunWithLifecycle 再启动 server——关停时
+// server 先停监听、实例才从注册中心摘除,窗口内 LB 仍把流量路由到已死的
+// 实例。需要「注册严格等到 server 就绪」的语义时,用 bootstrap/nacos 的
+// WithNNS/WithRequiredNNS(注册延迟到 app.Ready() 之后)。
 //
 // ⚠️ 行为:
 //   - Register 失败:返回 error,business 决定是否继续(通常 return err 触发整体退出)

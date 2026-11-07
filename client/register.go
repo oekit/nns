@@ -15,6 +15,10 @@ var log = logx.Delegating("nns/client")
 //
 // 服务名取 LocalServiceInit 记录的自身服务名（须先 Init），使用
 // GetPodIP 探测本机 IP。opts 控制权重、元数据等注册选项。
+//
+// 注册成功后实例身份（IP/Group/Cluster 等）会被缓存（#75）：配套的
+// Deregister 优先用该快照注销，注册与注销之间 GetPodIP 结果变化、或注销时
+// 漏传 WithGroup/WithCluster，都不会再让注销静默失效。
 func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
 	if c.registrar == nil {
 		// #66：「没注册器」（mock 模式/未启用注册发现）不是错误——幂等 no-op
@@ -34,7 +38,11 @@ func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry
 	if err != nil {
 		return err
 	}
-	return c.registrar.Register(ctx, inst)
+	if err := c.registrar.Register(ctx, inst); err != nil {
+		return err
+	}
+	c.rememberRegistered(inst)
+	return nil
 }
 
 // RegisterAs 向注册中心注册当前服务实例到**指定服务名**下。
@@ -51,6 +59,8 @@ func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry
 //
 // 配套的注销入口是 DeregisterAs：注册了几个名字就要注销几个名字，
 // 否则注册中心里会留下无人回收的实例。
+//
+// 注册成功后实例身份会被缓存（#75），DeregisterAs 优先用快照注销。
 //
 // 未配置 registrar 时返回 ErrRegistrarUnavailable；服务名为空时返回
 // ErrServiceNameRequired（参数校验先于环境检查——空服务名是调用方的错，
@@ -69,26 +79,51 @@ func (c *ServiceClient) RegisterAs(ctx context.Context, serviceName string, port
 	if err != nil {
 		return err
 	}
-	return c.registrar.Register(ctx, inst)
+	if err := c.registrar.Register(ctx, inst); err != nil {
+		return err
+	}
+	c.rememberRegistered(inst)
+	return nil
 }
 
 // Deregister 从注册中心注销当前服务实例。
+//
+// 实例身份优先取 Register 成功时缓存的快照（#75）：注册中心按
+// ip+port+service+group（+cluster）匹配实例，若注销时按当下环境重新推导——
+// 注册与注销之间 GetPodIP 结果变化（网卡枚举顺序变化/POD_IP 变更）、或
+// 注册时传了 WithGroup/WithCluster 而注销时漏传——就会匹配不到实例，
+// 注销**静默失效**、实例残留在注册中心继续接流量。
+//
+// 没有缓存（本 client 未注册过，如经 Registrar() 逃生口自行注册的调用方）
+// 时退回旧行为：按当下环境与 opts 现算实例身份——此时调用方必须保证
+// IP/Group/Cluster 与注册时完全一致。注销成功后缓存清除，再次 Deregister
+// 走现算路径。
 func (c *ServiceClient) Deregister(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
 	if c.registrar == nil {
 		return nil
 	}
+	name := c.getSelfServiceName()
 
-	inst, err := c.buildInstance(c.getSelfServiceName(), port, opts...)
-	if err != nil {
+	inst, ok := c.recallRegistered(name, port)
+	if !ok {
+		var err error
+		inst, err = c.buildInstance(name, port, opts...)
+		if err != nil {
+			return err
+		}
+	}
+	if err := c.registrar.Deregister(ctx, inst); err != nil {
 		return err
 	}
-	return c.registrar.Deregister(ctx, inst)
+	c.forgetRegistered(name, port)
+	return nil
 }
 
 // DeregisterAs 从注册中心注销指定服务名下的当前服务实例。
 //
-// 与 RegisterAs 配套：注销的实例与服务名、端口必须与注册时一致，
-// 否则注册中心匹配不到实例、注销会静默失效。
+// 与 RegisterAs 配套：实例身份优先取 RegisterAs 成功时缓存的快照（#75），
+// IP/Group/Cluster 不再依赖注销时的环境与 opts；无缓存时按当下环境现算，
+// 调用方须自行保证与注册时一致。
 //
 // 未配置 registrar 时返回 nil（与 Deregister 一致：注销是幂等收尾，
 // 没有 registrar 说明根本没注册过）；服务名为空时返回 ErrServiceNameRequired
@@ -101,11 +136,53 @@ func (c *ServiceClient) DeregisterAs(ctx context.Context, serviceName string, po
 		return nil
 	}
 
-	inst, err := c.buildInstance(serviceName, port, opts...)
-	if err != nil {
+	inst, ok := c.recallRegistered(serviceName, port)
+	if !ok {
+		var err error
+		inst, err = c.buildInstance(serviceName, port, opts...)
+		if err != nil {
+			return err
+		}
+	}
+	if err := c.registrar.Deregister(ctx, inst); err != nil {
 		return err
 	}
-	return c.registrar.Deregister(ctx, inst)
+	c.forgetRegistered(serviceName, port)
+	return nil
+}
+
+// instanceKey 是已注册实例缓存的键：服务名 + 端口唯一定位一次注册
+// （同一服务多端口各注册一次，如 HTTP + RPC 双协议端点）。
+type instanceKey struct {
+	service string
+	port    int
+}
+
+// rememberRegistered 缓存成功注册的实例身份（#75）。注册失败不缓存：
+// 注册中心里没有对应实例，注销本就无从谈起。
+func (c *ServiceClient) rememberRegistered(inst registry.Instance) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.registeredInstances == nil {
+		c.registeredInstances = make(map[instanceKey]registry.Instance)
+	}
+	c.registeredInstances[instanceKey{service: inst.Service, port: inst.Port}] = inst
+}
+
+// recallRegistered 取回注册时缓存的实例身份；未注册过返回 ok=false。
+func (c *ServiceClient) recallRegistered(serviceName string, port int) (registry.Instance, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	inst, ok := c.registeredInstances[instanceKey{service: serviceName, port: port}]
+	return inst, ok
+}
+
+// forgetRegistered 在注销成功后清除缓存：再次 Deregister 回到现算路径
+// （幂等语义与旧行为一致）。
+func (c *ServiceClient) forgetRegistered(serviceName string, port int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.registeredInstances, instanceKey{service: serviceName, port: port})
 }
 
 // buildInstance 构造注册实例：服务名与端口由调用方给出，IP 取本机
