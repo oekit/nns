@@ -298,9 +298,20 @@ func (n *NNSClient) Discoverer() registry.Discoverer {
 	return n.client.Discoverer()
 }
 
-// GetService 获取指定服务的基本配置信息。
+// GetService 获取指定服务的基本配置信息（实时拉取，返回真实错误）。
+//
+// 配置拉取失败（配置中心不可达）、配置 JSON 损坏、未注入 provider
+// （ErrConfigStoreUnavailable）时返回错误，不再静默降级默认超时值（#77）
+// ——调用方能区分「拉到的配置」与「兜底默认值」。
+//
+// 软降级语义（失败取默认值继续跑）的调用方：
+//   - 读内存缓存（Init/WatchService 维护、热更新）：ServiceClient().GetServiceBasic(name)；
+//   - 实时拉取但失败取默认值：ServiceClient().ServiceWithName(ctx, name)。
 func (n *NNSClient) GetService(ctx context.Context, serviceName string) (*metadata.ServiceBasic, error) {
-	basic := n.client.ServiceWithName(ctx, serviceName)
+	basic, err := n.client.ServiceConfig(ctx, serviceName)
+	if err != nil {
+		return nil, err
+	}
 	return &basic, nil
 }
 
