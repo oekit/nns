@@ -3,9 +3,9 @@ module github.com/oekit/nns
 go 1.24.0
 
 require (
-	github.com/oekit/concurrency v0.28.2
+	github.com/oekit/concurrency v0.28.3
 	github.com/oekit/core v0.13.2
-	github.com/oekit/logx v0.8.7
+	github.com/oekit/logx v0.8.8
 	github.com/oekit/registry v0.5.5
 	github.com/oekit/registry/nacos v0.1.9
 	github.com/oekit/registry/nacosimpl v0.1.9
