@@ -59,6 +59,13 @@ type ServiceClient struct {
 	// Register/Deregister 用它构造自身实例（c.mu 保护）
 	selfServiceName string
 
+	// registeredInstances 缓存本 client 成功注册的实例身份（#75），
+	// 键为 (服务名, 端口)。Deregister/DeregisterAs 优先用注册时的快照构造
+	// 注销实例——注册与注销之间 GetPodIP 结果变化（网卡枚举顺序/POD_IP
+	// 变更）、或调用方注销时漏传 WithGroup/WithCluster，都会让「现算的身份」
+	// 与注册中心里的实例对不上，注销静默失效、实例残留（c.mu 保护）。
+	registeredInstances map[instanceKey]registry.Instance
+
 	// 服务实例变更回调：存指针包装（Go 函数不可比较，指针可按身份删除），
 	// 并发订阅同一服务时单方失败只回滚自身、不抹掉他方已注册的回调
 	instanceCallbacks map[string][]*instanceCallback
@@ -288,6 +295,9 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 		}
 		c.watchedServices = make(map[string]bool)
 		c.configChangeCallbacks = nil
+		// Close 是终结操作：已注册实例的身份缓存一并清空（#75），
+		// 复用需重新 New。
+		c.registeredInstances = nil
 		c.mu.Unlock()
 
 		c.callbackMu.Lock()
