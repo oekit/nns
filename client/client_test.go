@@ -333,6 +333,59 @@ func TestCacheExpiry(t *testing.T) {
 	}
 }
 
+// TestNew_DefaultCacheExpiry 钉住 nns#94：client.New() 直连使用（provider
+// 无关用法）时 cacheExpiry 零值必须回填缺省 30s（与门面 nns.New 同缺省），
+// 而不是让容错层拿到 0——cacheExpiry==0 时 time.Since(lastUpdate) > 0 恒
+// 成立，「新鲜缓存」（Discover 容错链第 3 级）写入即过期、每次直通注册中心。
+// 显式 0 / 负值同样回填（过期语义没有「禁用」开关），显式正值原样保留。
+func TestNew_DefaultCacheExpiry(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []ClientOption
+		want time.Duration
+	}{
+		{"零值缺省", nil, 30 * time.Second},
+		{"显式 0 回填缺省", []ClientOption{WithCacheExpiry(0)}, 30 * time.Second},
+		{"显式负值回填缺省", []ClientOption{WithCacheExpiry(-time.Second)}, 30 * time.Second},
+		{"显式正值保留", []ClientOption{WithCacheExpiry(5 * time.Minute)}, 5 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := New(tt.opts...)
+			if c.cacheExpiry != tt.want {
+				t.Errorf("New().cacheExpiry = %v, want %v", c.cacheExpiry, tt.want)
+			}
+		})
+	}
+}
+
+// TestNew_ZeroCacheExpiry_FreshCacheServes 钉住 nns#94 的行为面：直连
+// client.New()（不传 cacheExpiry）时第二次 GetInstances 必须由「新鲜缓存」
+// 服务，不再穿透到注册中心。变异性负对照：还原 New 的缺省回填后，
+// discoverer 调用次数变 2、本测试转红。
+func TestNew_ZeroCacheExpiry_FreshCacheServes(t *testing.T) {
+	d := &countingDiscoverer{result: []registry.Instance{{IP: "10.0.0.1", Port: 8080}}}
+	c := New(WithDiscoverer(d))
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		insts, err := c.GetInstances(ctx, "svc-fresh")
+		if err != nil {
+			t.Fatalf("GetInstances #%d: %v", i+1, err)
+		}
+		if len(insts) != 1 || insts[0].IP != "10.0.0.1" {
+			t.Fatalf("GetInstances #%d = %v, want 1 instance 10.0.0.1", i+1, insts)
+		}
+		// 隔开两次调用的时钟读数：修复前 cacheExpiry==0 会让第 2 次调用
+		// 因 time.Since(lastUpdate) > 0 判过期而穿透
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	if got := d.getCalls(); got != 1 {
+		t.Errorf("discoverer called %d times, want 1（第二次应由新鲜缓存服务，不应穿透注册中心）", got)
+	}
+}
+
 func TestNamingAvailable(t *testing.T) {
 	c := newTestClient(t)
 	if c.namingAvailable() {

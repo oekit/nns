@@ -118,6 +118,10 @@ type ServiceClient struct {
 type ClientOption func(*ServiceClient)
 
 // WithCacheExpiry 设置实例缓存的过期时间。
+//
+// d <= 0（含零值缺省）时回退 defaultCacheExpiry（30s，与门面 nns.New 同缺省）：
+// 零值不表示「禁用过期检查」——容错层没有「永不过期」语义，注册中心故障时
+// 的新鲜缓存兜底（Discover 链第 3 级）依赖正常的过期判定（nns#94）。
 func WithCacheExpiry(d time.Duration) ClientOption {
 	return func(c *ServiceClient) { c.cacheExpiry = d }
 }
@@ -218,6 +222,12 @@ type subscribeCall struct {
 	done chan struct{}
 }
 
+// defaultCacheExpiry 是实例缓存过期时间的缺省值，与门面 nns.New 的缺省口径
+// 一致（nns#94）：cacheExpiry 零值不表示「禁用过期」——time.Since 恒大于 0
+// 会让 Discover 容错链第 3 级「新鲜缓存」写入即过期、每次直通注册中心，
+// 故 New 对 <=0 的值（漏配或显式零/负值）统一回填缺省。
+const defaultCacheExpiry = 30 * time.Second
+
 // New 创建一个独立的 ServiceClient 实例（provider 无关）。
 //
 // 每次调用都返回全新实例，互不影响。本包不绑定任何注册中心 provider：
@@ -241,6 +251,13 @@ func New(opts ...ClientOption) *ServiceClient {
 
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	// cacheExpiry 零值 = 漏配，回填缺省而不是让「新鲜缓存」容错层失效
+	// （nns#94）：cacheExpiry==0 时 time.Since(lastUpdate) > 0 恒成立，
+	// 缓存写入即过期，Discover 每次直通注册中心。
+	if c.cacheExpiry <= 0 {
+		c.cacheExpiry = defaultCacheExpiry
 	}
 
 	initMeta := make(map[string]string)
