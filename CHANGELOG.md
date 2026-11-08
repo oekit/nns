@@ -1,3 +1,9 @@
+## [v0.5.12] — 2026-11-09
+
+- fix(client): client.New() 零值 cacheExpiry 回填 30s 缺省——容错层恢复生效（#94）
+
+关联问题单：nns#94。
+
 ## [v0.5.11] — 2026-11-08
 
 - build: 依赖地板对齐——本版把 oekit 依赖地板抬到各依赖当前最新已发布版本（matrix-tools/scripts/align_floors.py 维护轮）
