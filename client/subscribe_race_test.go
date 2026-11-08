@@ -239,3 +239,82 @@ func TestSubscribeService_ConcurrentFirstSucceeds_SecondReuses(t *testing.T) {
 		t.Fatalf("provider 被注册 %d 次，期望 1 次（并发订阅应去重）", calls)
 	}
 }
+
+// #96：并发 Close × Subscribe——closed 是 atomic（原 bool 两把锁无
+// happens-before 边，-race 实锤）；本用例在 -race 下是回归钉。
+func TestSubscribe_ConcurrentClose_NoRace(t *testing.T) {
+	c := newTestClient(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			_ = c.SubscribeService(ctx, "svc-race", func([]registry.Instance) {})
+		}()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); _ = c.CloseWithContext(context.Background()) }()
+	wg.Wait()
+}
+
+// leakSubscriber：Subscribe 阻塞到 release 后以成功收场（真实派发一次推送）。
+type leakSubscriber struct {
+	release chan struct{}
+}
+
+func (l *leakSubscriber) Subscribe(ctx context.Context, service string, cb func([]registry.Instance)) error {
+	<-l.release
+	cb(nil)
+	return nil
+}
+
+func (l *leakSubscriber) Unsubscribe(ctx context.Context, service string) error { return nil }
+
+// #95：等待在途注册时 ctx 超时返回——回调条目必须被摘除，注册成功后
+// 不再收到推送（泄漏回归钉）。
+func TestSubscribe_CtxDeadlineDuringPending_NoCallbackLeak(t *testing.T) {
+	sub := &leakSubscriber{release: make(chan struct{})}
+	c := newTestClient(t, WithSubscriber(sub))
+
+	pushes := make(chan int, 4)
+	leaked := make(chan int, 4)
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- c.SubscribeService(context.Background(), "svc-leak", func(is []registry.Instance) {
+			pushes <- len(is)
+		})
+	}()
+	// 等第一个成为在途注册方（阻塞在 sub.Subscribe）
+	time.Sleep(150 * time.Millisecond)
+
+	// 第二个订阅方用超时 ctx，等到 ctx 过期
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel2()
+	if err2 := c.SubscribeService(ctx2, "svc-leak", func(is []registry.Instance) {
+		leaked <- len(is) // 「已失败返回」的回调若条目未摘除，会从这里漏进来
+	}); err2 == nil {
+		t.Fatal("第二个订阅方应因 ctx 超时返回错误")
+	}
+
+	// 放行第一个注册成功（其派发会推送一次）
+	close(sub.release)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first subscribe: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// 泄漏断言：摘除后的回调不得再收到推送（第一个回调的 pushes 合法收一次）
+	select {
+	case <-leaked:
+		t.Fatal("#95 回归：已「失败返回」的回调仍收到注册成功后的推送——条目未摘除")
+	case <-pushes:
+	}
+	select {
+	case <-leaked:
+		t.Fatal("#95 回归：泄漏条目收到推送")
+	default:
+	}
+}
+

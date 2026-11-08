@@ -17,8 +17,10 @@ import (
 func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string, callback func([]registry.Instance)) error {
 	c.callbackMu.Lock()
 	// Close 是终结操作：关闭后 SDK 客户端已 CloseClient，再向其注册监听
-	// 会残留无效订阅（与 WatchService 的 closed 检查对称）
-	if c.closed {
+	// 会残留无效订阅（与 WatchService 的 closed 检查对称）。
+	// closed 是 atomic（#96）：Close 持 c.mu 写、这里持 callbackMu 读——
+	// 两把锁无 happens-before 边，普通 bool 读是数据竞争。
+	if c.closed.Load() {
 		c.callbackMu.Unlock()
 		nnsLog.Warn("subscribe after close ignored", "service", serviceName)
 		return ErrClientClosed
@@ -76,6 +78,16 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		}
 		// 有在途注册 ⇒ 等它的结果，醒来后重新决策。
 		if call, ok := c.subscribing[serviceName]; ok {
+			// ctx 取消返回前按指针身份摘除自己刚追加的 entry（#95）——
+			// 与注册方失败路径的回滚同构；不摘的话注册一旦成功，已
+			// 「失败返回」的回调会收到后续所有 SDK 推送且永不清理。
+			list := c.instanceCallbacks[serviceName]
+			for i, e := range list {
+				if e == entry {
+					c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
+					break
+				}
+			}
 			c.callbackMu.Unlock()
 			select {
 			case <-call.done:
