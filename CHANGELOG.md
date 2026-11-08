@@ -1,3 +1,10 @@
+## [v0.5.13] — 2026-11-08
+
+### fix(client): 订阅等待者 ctx 取消回滚自身条目（#95）+ closed 原子化（#96）
+
+#95：等待在途注册时 ctx 超时返回，回调条目按指针身份摘除（泄漏实测复现，回归钉独立通道断言）；
+#96：closed bool 改 atomic.Bool（Close 持 c.mu 写、SubscribeService 持 callbackMu 读，两把锁无 happens-before）。
+
 ## [v0.5.12] — 2026-11-09
 
 - fix(client): client.New() 零值 cacheExpiry 回填 30s 缺省——容错层恢复生效（#94）
