@@ -128,7 +128,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 
 	c.mu.Lock()
 	// Close 后（终结语义）直接 no-op：不标记，否则残留去重标记
-	if c.closed {
+	if c.closed.Load() {
 		c.mu.Unlock()
 		return
 	}
@@ -146,7 +146,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 		// 注册前复查 closed：Close 可能在去重标记之后、goroutine 执行之前
 		// 完成快照——此时直接注册会泄漏监听器（无人再 Cancel）
 		c.mu.RLock()
-		if c.closed {
+		if c.closed.Load() {
 			c.mu.RUnlock()
 			return
 		}
@@ -198,7 +198,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 		// （当时 SDK 上还没有该 listener，StopListenConfig 是 no-op）——
 		// 立即补一次 Cancel，把竞态窗口收到"注册+补偿"内部
 		c.mu.RLock()
-		closedDuringRegister := c.closed
+		closedDuringRegister := c.closed.Load()
 		c.mu.RUnlock()
 		if closedDuringRegister {
 			if stopErr := c.configStore.StopListenConfig(context.Background(), serviceName, c.configGroup); stopErr != nil {

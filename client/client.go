@@ -84,10 +84,11 @@ type ServiceClient struct {
 	subscribing map[string]*subscribeCall
 	callbackMu  sync.RWMutex
 
-	// 生命周期：closed 由 c.mu 保护（WatchService 竞态检查用），
+	// 生命周期：closed 是 atomic（#96——Close 持 c.mu 写、SubscribeService
+	// 持 callbackMu 读，两把锁无 happens-before 边，bool 有数据竞争），
 	// closeOnce 保证 Close 幂等。默认路径 SDK 客户端的所有权在 nns 门面
 	// （门面创建、门面关闭），client 只清理自身监听状态
-	closed    bool
+	closed    atomic.Bool
 	closeOnce sync.Once
 
 	// 本地实例缓存 - 解决网络不通时的容错
@@ -305,7 +306,7 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 	var errs []error
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
-		c.closed = true
+		c.closed.Store(true)
 		services := make([]string, 0, len(c.watchedServices))
 		for svc := range c.watchedServices {
 			services = append(services, svc)
