@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,7 +12,8 @@ import (
 )
 
 // gateSubscriber 是「注册可控」的订阅器：Subscribe 会阻塞到 gate 放行，
-// 且可以配置为失败。
+// 且可以配置为失败。lastCB 记录最后一次注册的派发回调，供测试在注册
+// 成功后模拟 provider 推送（#104 复现需要）。
 type gateSubscriber struct {
 	mu       sync.Mutex
 	gate     chan struct{}
@@ -19,6 +21,7 @@ type gateSubscriber struct {
 	calls    int
 	entered  chan struct{}
 	once     sync.Once
+	lastCB   func([]registry.Instance)
 }
 
 func newGateSubscriber() *gateSubscriber {
@@ -28,6 +31,7 @@ func newGateSubscriber() *gateSubscriber {
 func (s *gateSubscriber) Subscribe(ctx context.Context, service string, cb func([]registry.Instance)) error {
 	s.mu.Lock()
 	s.calls++
+	s.lastCB = cb
 	s.mu.Unlock()
 	s.once.Do(func() { close(s.entered) })
 	select {
@@ -315,5 +319,103 @@ func TestSubscribe_CtxDeadlineDuringPending_NoCallbackLeak(t *testing.T) {
 	case <-leaked:
 		t.Fatal("#95 回归：泄漏条目收到推送")
 	default:
+	}
+}
+
+// TestSubscribeService_ConcurrentWaiterKeepsCallbackEntry 回归 nns#104：
+// 等待在途注册的订阅方，在注册**成功**醒来时自身回调条目必须仍在扇出列表
+// 里。此前 #95 修复把「按指针身份摘除自身 entry」放在 select **之前**无条件
+// 执行——与 ctx 是否取消无关：call.done 醒来（ctx 未取消）走去重路径时，
+// entry 已被摘且无人补回 ⇒ SubscribeService 返回 nil（成功）但回调一次都不
+// 触发，此后该服务的实例上下线推送全部丢失，服务发现核心契约
+// 「订阅成功 ⇒ 一定收到变更推送」被静默违背。
+//
+// 修法：摘除移进 ctx.Done 分支——只有 ctx 真正取消才回滚自身条目（#95
+// 语义保留），成功醒来者条目保留。
+func TestSubscribeService_ConcurrentWaiterKeepsCallbackEntry(t *testing.T) {
+	sub := newGateSubscriber()
+	c := newTestClient(t, WithSubscriber(sub))
+
+	var aHits, bHits int32
+	ctx := context.Background()
+
+	// A 先订阅：成为注册方，卡在 provider 的 Subscribe 上（gate 未放行）
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- c.SubscribeService(ctx, "svc", func([]registry.Instance) {
+			atomic.AddInt32(&aHits, 1)
+		})
+	}()
+	select {
+	case <-sub.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第一个订阅方未进入 provider 注册")
+	}
+
+	// B 并发订阅：A 在途（gate 未放行 ⇒ subscribing 必在），B 落入等待
+	// 分支阻塞在 call.done 上。
+	secondErr := make(chan error, 1)
+	go func() {
+		secondErr <- c.SubscribeService(ctx, "svc", func([]registry.Instance) {
+			atomic.AddInt32(&bHits, 1)
+		})
+	}()
+	// 等 B 落位：轮询到 B 的条目已追加（len==2），再给一段 settle 时间
+	// 让 B 走完「加锁检查 → 解锁 → select 停车」的无竞争路径（与仓内 #95
+	// 回归测试 TestSubscribe_CtxDeadlineDuringPending_NoCallbackLeak 的
+	// 停车启发式同款）。gate 放行只发生在 B 落位之后；固定代码下无论 B
+	// 停在等待分支还是直接走去重路径，条目都应幸存 ⇒ 本测试在修复后
+	// 无竞态失败面。
+	c.callbackMu.Lock()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(c.instanceCallbacks["svc"]) < 2 {
+		c.callbackMu.Unlock()
+		time.Sleep(2 * time.Millisecond)
+		c.callbackMu.Lock()
+	}
+	svcLen := len(c.instanceCallbacks["svc"])
+	c.callbackMu.Unlock()
+	if svcLen < 2 {
+		t.Fatalf("B 的回调条目未落位（len=%d）", svcLen)
+	}
+	time.Sleep(100 * time.Millisecond) // settle：B 进入 select 停车
+
+	// 放行 A 的注册；A 成功 ⇒ B 经 call.done 醒来走去重路径返回 nil
+	close(sub.gate)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("A subscribe: %v", err)
+	}
+	if err := <-secondErr; err != nil {
+		t.Fatalf("B subscribe（等待成功醒来应走去重路径返回 nil）: %v", err)
+	}
+
+	// 模拟 provider 推送实例变更：扇出必须同时到达 A 与 B
+	sub.mu.Lock()
+	dispatch := sub.lastCB
+	sub.mu.Unlock()
+	if dispatch == nil {
+		t.Fatal("provider 派发回调未被记录")
+	}
+	dispatch([]registry.Instance{{Service: "svc", IP: "10.0.0.1", Port: 8080}})
+
+	pushDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(pushDeadline) && atomic.LoadInt32(&aHits)+atomic.LoadInt32(&bHits) < 2 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&aHits) != 1 {
+		t.Fatalf("A hits = %d, want 1", aHits)
+	}
+	if atomic.LoadInt32(&bHits) != 1 {
+		t.Fatalf("B hits = %d, want 1（#104 回归：B 订阅成功但回调条目在等待期被提前摘除，推送扇出不可达）", bHits)
+	}
+
+	// 二次推送同样可达（去重路径的一次性初始回调不算数，变更推送持续可达）
+	dispatch([]registry.Instance{{Service: "svc", IP: "10.0.0.2", Port: 8080}})
+	pushDeadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(pushDeadline) && atomic.LoadInt32(&aHits)+atomic.LoadInt32(&bHits) < 4 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&aHits) != 2 || atomic.LoadInt32(&bHits) != 2 {
+		t.Fatalf("after 2nd push: A=%d B=%d, want 2/2", aHits, bHits)
 	}
 }
