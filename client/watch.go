@@ -68,6 +68,11 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 // 等待者醒来后**重新决策**（而不是照抄前一个的结论）：多个等待者同时醒来时
 // 只有第一个能拿到注册资格，其余看到「已注册」走去重路径 ⇒ provider 只被
 // 注册一次。
+//
+// 等待期间等待者自身的回调条目**保留在扇出列表里**（#104）：在途注册成功后
+// 醒来的等待者走去重路径，条目必须在——摘了的话 SubscribeService 返回成功
+// 但回调永不在扇出列表，实例变更全部丢失。只有 ctx 真正取消（#95）或注册方
+// 失败（注册方自己的回滚）才摘条目。
 func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string, entry *instanceCallback) (bool, error) {
 	for {
 		c.callbackMu.Lock()
@@ -78,21 +83,31 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		}
 		// 有在途注册 ⇒ 等它的结果，醒来后重新决策。
 		if call, ok := c.subscribing[serviceName]; ok {
-			// ctx 取消返回前按指针身份摘除自己刚追加的 entry（#95）——
-			// 与注册方失败路径的回滚同构；不摘的话注册一旦成功，已
-			// 「失败返回」的回调会收到后续所有 SDK 推送且永不清理。
-			list := c.instanceCallbacks[serviceName]
-			for i, e := range list {
-				if e == entry {
-					c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
-					break
-				}
-			}
 			c.callbackMu.Unlock()
 			select {
 			case <-call.done:
+				// 在途注册已出结果：自己的 entry **留在扇出列表里**（#104），
+				// 回循环顶重新决策——注册成功则走去重路径（条目在，推送
+				// 扇出可达本回调）；失败则本方接手重试。此前 #95 修复把
+				// 摘除放在 select 之前无条件执行，成功醒来的等待者条目
+				// 已被摘且无人补回——并发订阅同一服务时后到者「订阅成功
+				// 但回调永不触发」。
 				continue
 			case <-ctx.Done():
+				// 只有 ctx 真正取消时才按指针身份回滚自己刚追加的 entry
+				// （#95）——与注册方失败路径的回滚同构；不摘的话注册一旦
+				// 成功，已「失败返回」的回调会收到后续所有 SDK 推送且永不
+				// 清理。（此刻在途注册可能恰好完成：照样摘，本调用方拿到
+				// 的是错误，不该再收推送。）
+				c.callbackMu.Lock()
+				list := c.instanceCallbacks[serviceName]
+				for i, e := range list {
+					if e == entry {
+						c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
+						break
+					}
+				}
+				c.callbackMu.Unlock()
 				return false, ctx.Err()
 			}
 		}
