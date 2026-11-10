@@ -15,23 +15,47 @@ import (
 var ErrConfigStoreUnavailable = errors.New("nns: config store not available")
 
 // BindServiceBasic 解析服务全名并设置服务基本配置的默认值。
+//
+// 只对**未配置**（<=0）的超时回填默认值（ConnTimeout 1000ms / ReadTimeout
+// 5000ms / WriteTimeout 5000ms）；显式配置的取值原样保留——1–49ms 的低延迟
+// 超时不再被改写成默认值（#127：此前 <50 一律静默钳成 1000/5000ms，20ms
+// 的配置被吞 50 倍且零日志），仅打 Warn 防呆、不改写。
+//
+// Retry：负值钳 0（负重试无意义；这是仅存的改写，必留日志）；>15 原样保留
+// 并 Warn——不再静默钳 15（#127）。
+//
+// 本函数是配置消费的必经点（LocalServiceInit / LoadDepService /
+// ServiceConfig / ServiceWithName / WatchService 热更回调），口径统一在
+// 这里收口：配置中心原文与生效值一致。
 func (c *ServiceClient) BindServiceBasic(serviceName string, basic *metadata.ServiceBasic) {
 	serviceInfo := metadata.ParseServiceName(serviceName)
 	if serviceInfo != nil {
 		basic.ServiceName = *serviceInfo
 	}
 
-	if basic.ConnTimeout < 50 {
-		basic.ConnTimeout = 1000
+	bindTimeout := func(field string, v *int, def int) {
+		switch {
+		case *v <= 0:
+			nnsLog.Debug("timeout not configured, backfilled to default",
+				"service", serviceName, "field", field, "default", def)
+			*v = def
+		case *v < 50:
+			nnsLog.Warn("suspiciously low timeout kept as-is (not rewritten)",
+				"service", serviceName, "field", field, "value", *v)
+		}
 	}
-	if basic.ReadTimeout < 50 {
-		basic.ReadTimeout = 5000
-	}
-	if basic.WriteTimeout < 50 {
-		basic.WriteTimeout = 5000
-	}
-	if basic.Retry > 15 {
-		basic.Retry = 15
+	bindTimeout("conn_timeout", &basic.ConnTimeout, 1000)
+	bindTimeout("read_timeout", &basic.ReadTimeout, 5000)
+	bindTimeout("write_timeout", &basic.WriteTimeout, 5000)
+
+	switch {
+	case basic.Retry < 0:
+		nnsLog.Warn("negative retry clamped to 0",
+			"service", serviceName, "value", basic.Retry)
+		basic.Retry = 0
+	case basic.Retry > 15:
+		nnsLog.Warn("retry above recommended max kept as-is (not clamped)",
+			"service", serviceName, "value", basic.Retry)
 	}
 }
 
