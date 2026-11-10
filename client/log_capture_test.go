@@ -32,8 +32,8 @@ func (c *captureLogger) record(level, msg string, kv []any) {
 // With* 派生返回自身：Delegating 先 Default().WithAttrs(component) 再打日志，
 // 返回 Nop 派生会丢捕获。
 func (c *captureLogger) WithAttrs(...logx.Attr) logx.Logger { return c }
-func (c *captureLogger) WithGroup(string) logx.Logger      { return c }
-func (c *captureLogger) WithService(string) logx.Logger    { return c }
+func (c *captureLogger) WithGroup(string) logx.Logger       { return c }
+func (c *captureLogger) WithService(string) logx.Logger     { return c }
 func (c *captureLogger) WithCtx(context.Context) logx.Logger {
 	return c
 }
