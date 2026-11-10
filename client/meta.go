@@ -14,25 +14,53 @@ import (
 // 但未注入 ConfigStore（mock 模式之外）时返回（#77）。
 var ErrConfigStoreUnavailable = errors.New("nns: config store not available")
 
-// BindServiceBasic 解析服务全名并设置服务基本配置的默认值。
+// 未配置（<=0）超时字段的回填缺省值，与 metadata.NewServiceBasic 同口径。
+const (
+	defaultConnTimeout  = 1000
+	defaultReadTimeout  = 5000
+	defaultWriteTimeout = 5000
+	// maxAdvisedRetry 是 Retry 的防呆建议上限：显式超限只 Warn 不改写
+	// ——「上限」是给漏配兜底的，不是改写治理意图的依据（nns#127）。
+	maxAdvisedRetry = 15
+)
+
+// BindServiceBasic 解析服务全名并对**未配置**（<=0）的超时字段回填默认值。
+//
+// 只对未配置回填，显式正值原样保留：1–49ms 的显式小值是低延迟服务的真实
+// 治理意图（同 AZ RPC），旧实现把「<50」当「未配置」，显式 20ms 被静默
+// 改写成 1000ms（放大 50 倍、零日志），配置中心原文与生效值对不上（nns#127）。
+// 显式小值保留但 Warn 提示——防呆可告警，不可改写。
+//
+// Retry：<0 视为未配置回填 0；>15 显式保留并 Warn（不再静默钳位）。
 func (c *ServiceClient) BindServiceBasic(serviceName string, basic *metadata.ServiceBasic) {
 	serviceInfo := metadata.ParseServiceName(serviceName)
 	if serviceInfo != nil {
 		basic.ServiceName = *serviceInfo
 	}
 
-	if basic.ConnTimeout < 50 {
-		basic.ConnTimeout = 1000
+	basic.ConnTimeout = bindTimeoutField(serviceName, "conn_timeout", basic.ConnTimeout, defaultConnTimeout)
+	basic.ReadTimeout = bindTimeoutField(serviceName, "read_timeout", basic.ReadTimeout, defaultReadTimeout)
+	basic.WriteTimeout = bindTimeoutField(serviceName, "write_timeout", basic.WriteTimeout, defaultWriteTimeout)
+
+	basic.Retry = max(basic.Retry, 0) // 负值视为未配置；显式正值（含超限）保留
+	if basic.Retry > maxAdvisedRetry {
+		nnsLog.Warn("explicit retry above advisory cap kept as configured (was silently clamped before nns#127)",
+			"service", serviceName, "field", "retry", "value", basic.Retry, "cap", maxAdvisedRetry)
 	}
-	if basic.ReadTimeout < 50 {
-		basic.ReadTimeout = 5000
+}
+
+// bindTimeoutField 回填**未配置**（<=0）的超时字段；显式正值原样返回。
+// 显式小值（1–49ms，低于旧版钳位阈值）保留并 Warn 指明「配置 X 按显式值
+// 生效」，让改写面可观测（nns#127：此前被静默吞成默认值）。
+func bindTimeoutField(serviceName, field string, v, def int) int {
+	if v <= 0 {
+		return def
 	}
-	if basic.WriteTimeout < 50 {
-		basic.WriteTimeout = 5000
+	if v < 50 {
+		nnsLog.Warn("explicit sub-50ms timeout kept as configured (low-latency intent, was silently raised to default before nns#127)",
+			"service", serviceName, "field", field, "value", v)
 	}
-	if basic.Retry > 15 {
-		basic.Retry = 15
-	}
+	return v
 }
 
 // ServiceWithName 根据服务全名获取服务基本配置。
