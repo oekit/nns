@@ -232,22 +232,54 @@ func (c *ServiceClient) GetDepService() map[string]*metadata.ServiceBasic {
 	return out
 }
 
-// AddStaticInstance 添加静态服务实例。
+// AddStaticInstance 运行期向指定服务追加静态实例。
+//
+// 语义**跟随该服务的既有形态**，不翻转发现路径（nns#128）：
+//   - 已是短路语义的服务（构造期 WithStaticInstances 配置且未标兜底）：
+//     沿用短路语义，实例追加进静态表——本地开发/测试的既有用法不变；
+//   - 其余服务（兜底语义、或尚未配置静态实例的服务）：追加的实例以**兜底**
+//     角色参与（该服务标记为兜底语义）——注册中心照常查询，仅注册中心路径
+//     失败或返回空时启用。运维热加备用地址不再把服务静默切成「静态短路」
+//     （那会切断注册中心发现：实例上下线、健康摘除、订阅推送全部失效）。
+//
+// 想显式切换语义请走构造期选项（WithStaticInstances / WithStaticFallback），
+// 运行期入口只叠加、不切换。
+//
 // 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
 func (c *ServiceClient) AddStaticInstance(serviceName string, instances ...registry.Instance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.staticInstances == nil {
+		c.staticInstances = make(map[string][]registry.Instance)
+	}
+	// 短路判定以**写入前**的状态为准：追加会让 fresh 服务「看起来已配静态」，
+	// 先取语义再写表，否则 fresh 服务被误判成短路语义
+	shortCircuit := c.shortCircuitsLocked(serviceName)
 	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], normalizeStaticInstances(instances)...)
-	nnsLog.Info("added static instances", "service", serviceName, "count", len(instances))
+	c.markRuntimeStaticLocked(serviceName, shortCircuit)
+	nnsLog.Info("added static instances", "service", serviceName, "count", len(instances),
+		"semantics", staticSemanticName(shortCircuit))
 }
 
-// SetStaticInstances 设置静态服务实例（覆盖）。
+// SetStaticInstances 运行期设置静态服务实例（覆盖）。
+//
+// 语义跟随与 AddStaticInstance 相同（nns#128）：已是短路语义的服务沿用
+// 短路；其余服务标记为兜底——注册中心照常查询，静态表只在注册中心路径
+// 失败或返回空时启用。覆盖**不**恢复短路语义，想切回短路请重新构造
+// （构造期 WithStaticInstances）。
+//
 // 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
 func (c *ServiceClient) SetStaticInstances(serviceName string, instances []registry.Instance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.staticInstances == nil {
+		c.staticInstances = make(map[string][]registry.Instance)
+	}
+	shortCircuit := c.shortCircuitsLocked(serviceName)
 	c.staticInstances[serviceName] = normalizeStaticInstances(instances)
-	nnsLog.Info("set static instances", "service", serviceName, "count", len(instances))
+	c.markRuntimeStaticLocked(serviceName, shortCircuit)
+	nnsLog.Info("set static instances", "service", serviceName, "count", len(instances),
+		"semantics", staticSemanticName(shortCircuit))
 }

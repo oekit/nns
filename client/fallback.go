@@ -88,6 +88,12 @@ func WithStaticFallback(serviceName string, instances []registry.Instance) Clien
 func (c *ServiceClient) staticShortCircuits(serviceName string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.shortCircuitsLocked(serviceName)
+}
+
+// shortCircuitsLocked 是 staticShortCircuits 的锁内版本（调用方已持 c.mu
+// ——读锁版本在写锁内自锁）。判定口径与 staticShortCircuits 一致。
+func (c *ServiceClient) shortCircuitsLocked(serviceName string) bool {
 	if c.fallbackOnly[serviceName] {
 		return false
 	}
@@ -95,6 +101,31 @@ func (c *ServiceClient) staticShortCircuits(serviceName string) bool {
 		return false
 	}
 	return len(c.staticInstances[serviceName]) > 0
+}
+
+// markRuntimeStaticLocked 把运行期静态写入的语义钉在服务上（须持 c.mu 写锁）。
+//
+// shortCircuit=true（写入前已是短路语义）保持短路——本地开发/测试的既有
+// 用法不变；其余服务标记为兜底语义：运行期入口只**叠加**静态实例、不翻转
+// 发现路径（nns#128）——此前运行期写入口不继承不声明语义，运维热加备用
+// 地址会把服务静默切成「静态短路」，切断注册中心发现。
+func (c *ServiceClient) markRuntimeStaticLocked(serviceName string, shortCircuit bool) {
+	if shortCircuit {
+		return
+	}
+	if c.fallbackOnly == nil {
+		c.fallbackOnly = make(map[string]bool)
+	}
+	c.fallbackOnly[serviceName] = true
+}
+
+// staticSemanticName 返回该服务当前静态语义的可读名（日志观测用），
+// 与 staticShortCircuits 的判定一一对应。
+func staticSemanticName(shortCircuit bool) string {
+	if shortCircuit {
+		return "static-first (short-circuit)"
+	}
+	return "fallback (registry-first)"
 }
 
 // staticFallbackPool 返回该服务的兜底静态实例；不参与兜底时返回 nil。

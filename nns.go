@@ -335,13 +335,19 @@ func (n *NNSClient) Unsubscribe(ctx context.Context, serviceName string) error {
 	return n.client.UnsubscribeService(ctx, serviceName)
 }
 
-// AddStaticInstance 向指定服务追加静态实例地址。
+// AddStaticInstance 运行期向指定服务追加静态实例地址。
+//
+// 语义跟随该服务的既有形态，不翻转发现路径（nns#128）：已是短路语义的
+// 服务（WithStaticInstance 构造期配置）沿用短路；其余服务以**兜底**角色
+// 参与——注册中心照常查询，仅注册中心路径失败或返回空时启用。
 // 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func (n *NNSClient) AddStaticInstance(serviceName string, instances ...registry.Instance) {
 	n.client.AddStaticInstance(serviceName, instances...)
 }
 
-// SetStaticInstances 设置指定服务的静态实例列表（覆盖原有）。
+// SetStaticInstances 运行期设置指定服务的静态实例列表（覆盖原有）。
+//
+// 语义跟随与 AddStaticInstance 相同（nns#128）：覆盖不恢复短路语义。
 // 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func (n *NNSClient) SetStaticInstances(serviceName string, instances []registry.Instance) {
 	n.client.SetStaticInstances(serviceName, instances)
