@@ -88,6 +88,12 @@ func WithStaticFallback(serviceName string, instances []registry.Instance) Clien
 func (c *ServiceClient) staticShortCircuits(serviceName string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.staticShortCircuitsLocked(serviceName)
+}
+
+// staticShortCircuitsLocked 与 staticShortCircuits 同判据，但调用方必须
+// 已持有 c.mu（读写皆可）——供运行期写入口在锁内做「切路径前后」对比（#128）。
+func (c *ServiceClient) staticShortCircuitsLocked(serviceName string) bool {
 	if c.fallbackOnly[serviceName] {
 		return false
 	}

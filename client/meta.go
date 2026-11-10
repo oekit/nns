@@ -228,22 +228,96 @@ func (c *ServiceClient) GetDepService() map[string]*metadata.ServiceBasic {
 	return out
 }
 
-// AddStaticInstance 添加静态服务实例。
+// AddStaticInstance 添加静态服务实例（**短路**语义，与 WithStaticInstances
+// 一致）。
+//
+// ⚠️ 会改变发现路径（#128）：FallbackStaticFirst（缺省）下，此前没有静态
+// 配置的服务被写入后即**短路注册中心**——实例上下线、权重调整、健康摘除
+// 不再反映到 GetInstances/GetAllInstances。运行期热加「备用地址」请改用
+// AddStaticFallback（兜底语义，注册中心发现保持不变）；确要切到短路时本
+// 函数会打 Warn 点明后果。已有语义标记跟随（fallbackOnly 不被改写）：
+// 兜底语义的服务追加实例仍是兜底。
+//
 // 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
 func (c *ServiceClient) AddStaticInstance(serviceName string, instances ...registry.Instance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	wasShort := c.staticShortCircuitsLocked(serviceName)
 	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], normalizeStaticInstances(instances)...)
 	nnsLog.Info("added static instances", "service", serviceName, "count", len(instances))
+	if !wasShort && c.staticShortCircuitsLocked(serviceName) {
+		nnsLog.Warn("static instances now short-circuit registry discovery for this service; "+
+			"registry up/down, weight and health changes no longer apply — "+
+			"use AddStaticFallback/SetStaticFallback for backup addresses, or SetStaticInstances(nil) to restore",
+			"service", serviceName)
+	}
 }
 
-// SetStaticInstances 设置静态服务实例（覆盖）。
+// SetStaticInstances 设置静态服务实例（覆盖，**短路**语义，与
+// WithStaticInstances 一致）。
+//
+// ⚠️ 同 AddStaticInstance：会把该服务切到静态短路（切路径时 Warn）；
+// 热加备用地址请用 SetStaticFallback。已有语义标记跟随（fallbackOnly
+// 不被改写）。
+//
 // 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
 func (c *ServiceClient) SetStaticInstances(serviceName string, instances []registry.Instance) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	wasShort := c.staticShortCircuitsLocked(serviceName)
 	c.staticInstances[serviceName] = normalizeStaticInstances(instances)
 	nnsLog.Info("set static instances", "service", serviceName, "count", len(instances))
+	if !wasShort && c.staticShortCircuitsLocked(serviceName) {
+		nnsLog.Warn("static instances now short-circuit registry discovery for this service; "+
+			"registry up/down, weight and health changes no longer apply — "+
+			"use AddStaticFallback/SetStaticFallback for backup addresses, or SetStaticInstances(nil) to restore",
+			"service", serviceName)
+	}
+}
+
+// AddStaticFallback 追加**兜底**静态实例（与 WithStaticFallback 一致的语义）。
+//
+// 与 AddStaticInstance 的区别只在参与时机：本入口把该服务标记为兜底语义，
+// **不改变发现路径**——注册中心仍是第一数据源，只有注册中心路径失败或返回
+// 空时静态实例才参与取值。运行期热加备用地址（管理面/脚本）用它，不会切断
+// 注册中心发现（#128）。
+//
+// 权重与注册侧同口径：Weight<=0 回填默认权重 10（见 normalizeStaticInstances）。
+func (c *ServiceClient) AddStaticFallback(serviceName string, instances ...registry.Instance) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.staticInstances == nil {
+		c.staticInstances = make(map[string][]registry.Instance)
+	}
+	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], normalizeStaticInstances(instances)...)
+	if c.fallbackOnly == nil {
+		c.fallbackOnly = make(map[string]bool)
+	}
+	c.fallbackOnly[serviceName] = true
+	nnsLog.Info("added static fallback instances (registry discovery preserved)",
+		"service", serviceName, "count", len(instances))
+}
+
+// SetStaticFallback 设置**兜底**静态实例（覆盖，与 WithStaticFallback 一致
+// 的语义）。
+//
+// 与 SetStaticInstances 的区别只在参与时机：本入口把该服务标记为兜底语义，
+// **不改变发现路径**（#128）。权重口径与 AddStaticFallback 一致。
+func (c *ServiceClient) SetStaticFallback(serviceName string, instances []registry.Instance) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.staticInstances == nil {
+		c.staticInstances = make(map[string][]registry.Instance)
+	}
+	c.staticInstances[serviceName] = normalizeStaticInstances(instances)
+	if c.fallbackOnly == nil {
+		c.fallbackOnly = make(map[string]bool)
+	}
+	c.fallbackOnly[serviceName] = true
+	nnsLog.Info("set static fallback instances (registry discovery preserved)",
+		"service", serviceName, "count", len(instances))
 }

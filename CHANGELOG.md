@@ -8,6 +8,10 @@
 
 关联问题单：oekit/nns#127。
 
+- fix(client): 运行期静态实例入口语义显式化（#128）——新增 AddStaticFallback/SetStaticFallback 兜底语义入口（热加备用地址不再切断注册中心发现）；AddStaticInstance/SetStaticInstances 切到静态短路时 Warn 点明后果、已有 fallbackOnly 语义标记跟随不被改写；文档补写发现路径影响
+
+关联问题单：oekit/nns#128。
+
 ## [v0.5.17] — 2026-11-10
 
 - - build: 依赖地板对齐（第二轮发版后 floor sync，无代码变更）
