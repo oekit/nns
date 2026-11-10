@@ -1,7 +1,7 @@
 # AGENTS.md — oekit/nns
 
-> NNS 服务治理客户端——provider 无关发现/配置/实例缓存
-> 当前版本：`v0.5.16` · module：`github.com/oekit/nns` · org：[oekit = Open Easy Kit](https://oekit.github.io)
+> NNS 服务治理客户端——provider 无关发现/配置/实例缓存；v0.6.0 起 运行期静态实例只叠加不翻转发现路径（Add/SetStaticInstances 语义跟随既有形态，nns#128）、GetAllInstances 与 GetInstances 同口径容错（nns#129）、BindServiceBasic 只对 <=0 回填默认（显式小值原样生效，nns#127）、ErrRegistrarUnavailable 哨兵仅为兼容保留无返回点（nns#126）
+> 当前版本：`v0.6.0` · module：`github.com/oekit/nns` · org：[oekit = Open Easy Kit](https://oekit.github.io)
 
 ## 本仓包含
 `./`、`client/`、`metadata/`

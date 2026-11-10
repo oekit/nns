@@ -1,3 +1,22 @@
+## [v0.6.0] — 2026-11-11
+
+### fix(client): 审计清扫——运行期静态实例叠加语义、GetAllInstances 同口径容错、BindServiceBasic 不再改写显式配置、ErrRegistrarUnavailable 文档对齐
+
+- fix(client): `AddStaticInstance`/`SetStaticInstances` 运行期写入只**叠加**、不翻转发现路径（[#128](https://github.com/oekit/nns/issues/128)）——已是短路语义的服务（构造期 `WithStaticInstances`）沿用短路；其余服务（兜底语义或尚未配静态的服务）标记为兜底语义：注册中心照常查询，静态表仅在注册中心路径失败/返回空时启用。此前运维热加备用地址会把服务静默切成「静态短路」（切断注册中心发现，实例上下线/健康摘除/订阅推送全部失效，#31 形态在运行时 API 复活）；想显式切换语义走构造期选项。日志补 `semantics` 字段（static-first / fallback）
+- fix(client): `GetAllInstances` 与 `GetInstances` 容错/静态语义同口径（[#129](https://github.com/oekit/nns/issues/129)）——短路判定、失败 stale 缓存/兜底静态降级、空结果回填兜底全部对齐；降级分支不再把兜底静态当短路返回（静态遮蔽缓存）、缓存/兜底全空时显式报错（不再「空列表 + nil」假成功）。差别只剩数据源（DiscoverAll 全量视图 vs Discover 路由视图）且全量结果不回写路由缓存（不健康实例不进路由面）。管理台/巡检不再「业务活着、面板红了」
+- fix(client): `BindServiceBasic` 只对**未配置**（<=0）的超时字段回填默认值（[#127](https://github.com/oekit/nns/issues/127)）——显式 1–49ms 低延迟配置（同 AZ RPC）原样生效并 Warn 提示，不再被静默吞成 1000/5000ms（放大 50 倍且零日志，配置中心原文与生效值对不上）；Retry<0 视为未配置回填 0，>15 显式保留并 Warn（不再静默钳位）
+- docs(client): `ErrRegistrarUnavailable` 哨兵文档改为「仅兼容保留」（[#126](https://github.com/oekit/nns/issues/126)）——自 #66 起无 registrar 的 Register/RegisterAs 是幂等 no-op success，哨兵全仓零返回点，godoc 不再承诺返回、按它写的 errors.Is 分支永不命中；顺带修 RegisterAs no-op 日志文本误写 "deregister is a no-op"（复制粘贴）；同义反复断言（`errors.Is(x, x)` 恒真）替换为「无 registrar 恒不返回哨兵」的行为断言 + 日志文本钉住
+
+现代语言特性：Retry 负值钳位用 `max` 内建（`max(basic.Retry, 0)`）；哨兵契约断言用 `errors.Is`；测试循环用 `for range int`。
+
+**升级可见**（0.x minor，语义变更不走 BREAKING 标记细则见各 issue）：
+- 依赖运行期 `AddStaticInstance`/`SetStaticInstances` 做「热钉静态短路」的调用方：改用构造期 `WithStaticInstances`（运行期入口已改为叠加/兜底语义）
+- 依赖 `GetAllInstances` 注册中心故障时报错做告警的调用方：现在与 `GetInstances` 同口径降级（stale 缓存/兜底静态），告警口径请改用 discover 错误日志
+- 显式 1–49ms 超时配置与 >15 重试的调用方：生效值即配置值（此前被静默改写为默认/钳位）
+- 依赖 `ErrRegistrarUnavailable` 做降级分支的调用方：分支永不命中（#66 起），改为直接调用
+
+关联问题单：nns#126、nns#127、nns#128、nns#129。
+
 ## [v0.5.17] — 2026-11-10
 
 - - build: 依赖地板对齐（第二轮发版后 floor sync，无代码变更）
