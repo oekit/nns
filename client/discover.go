@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"fmt"
-	"github.com/oekit/registry"
 	"time"
+
+	"github.com/oekit/logx"
+	"github.com/oekit/registry"
 )
 
 // GetInstances 获取服务实例，支持本地缓存和静态配置。
@@ -94,12 +96,51 @@ func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([
 }
 
 // GetAllInstances 获取指定服务的全部实例列表（包括不健康的实例）。
-// 使用 singleflight 保护并发请求，避免缓存击穿。
+//
+// 与 GetInstances 同一套容错/静态语义（#129——此前两个入口整体分叉：短路
+// 服务照样打注册中心、失败无兜底、空结果不兜底、降级分支把兜底服务当短路
+// 返回，同一配置两个入口给出不同实例面），差别只有两点：
+//
+//   - 取「全部实例」走 DiscoverAll（含不健康实例）；
+//   - 结果**不写入**实例缓存（实例缓存只存健康视图，供 GetInstances 路由）。
+//
+// 优先序（与 GetInstances 逐级对齐）：
+//  1. 短路语义的静态配置（同 GetInstances 第 1 级）
+//  2. Mock 模式（同 GetInstances 第 2 级）
+//  3. 无 Discoverer：新鲜缓存 → 兜底静态 → 报错（同 GetInstances 第 3/4 级）
+//  4. DiscoverAll（singleflight 保护，"all:" 前缀与 GetInstances 的
+//     flight 分开；失败降级 stale 缓存 → 兜底静态 → 报错，同第 5/6 级）
+//  5. 空结果兜底静态（同 GetInstances 第 6 级）
+//
+// 返回值契约与 GetInstances 一致：空列表 + nil error 表示「当前无可用实例，
+// 由调用方决定回落」。
 func (c *ServiceClient) GetAllInstances(ctx context.Context, serviceName string) ([]registry.Instance, error) {
-	if c.mockMode || c.discoverer == nil {
+	// 1. 短路语义的静态配置（本地开发、测试）
+	if c.staticShortCircuits(serviceName) {
+		c.mu.RLock()
+		static := c.staticInstances[serviceName]
+		c.mu.RUnlock()
+		return copyInstances(static), nil
+	}
+
+	// 2. Mock 模式
+	if c.mockMode {
 		return c.getInstancesFromStaticOrCache(serviceName), nil
 	}
 
+	// 3. 无 Discoverer（未注入或 provider 构造失败降级）：与 GetInstances
+	// 同口径——新鲜缓存优先，兜底静态实例不被当短路返回
+	if c.discoverer == nil {
+		if cached := c.getInstancesFromCache(serviceName); cached != nil {
+			return c.withStaticFallback(serviceName, cached), nil
+		}
+		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
+			return fb, nil
+		}
+		return nil, fmt.Errorf("no discoverer available and no cached instances for [%s]", serviceName)
+	}
+
+	// 4. 从注册中心获取全部实例（singleflight 保护并发，避免缓存击穿）
 	result, err := c.discoverSfg.Do(ctx, "all:"+serviceName, func(ctx context.Context) ([]registry.Instance, error) {
 		rawInstances, derr := c.discoverer.DiscoverAll(ctx, serviceName)
 		if derr != nil {
@@ -108,10 +149,22 @@ func (c *ServiceClient) GetAllInstances(ctx context.Context, serviceName string)
 		return rawInstances, nil
 	})
 	if err != nil {
+		// DiscoverAll 失败，降级使用缓存——即使已过期（stale）也比直接报错好，
+		// 与 GetInstances 第 5/6 级同口径
+		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
+			nnsLog.Warn("discover all failed, falling back to stale cache", "service", serviceName, logx.ErrKey, err)
+			return cached, nil
+		}
+		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
+			nnsLog.Warn("discover all failed, falling back to static instances", "service", serviceName, logx.ErrKey, err)
+			return fb, nil
+		}
 		return nil, err
 	}
+
+	// 5. 注册中心返回空列表 → 兜底静态实例（同 GetInstances 第 6 级）。
 	// 返回拷贝，避免 singleflight 等待方共享同一可变切片
-	return copyInstances(result), nil
+	return c.withStaticFallback(serviceName, copyInstances(result)), nil
 }
 
 // getInstancesFromStaticOrCache 从静态配置或缓存获取实例

@@ -62,16 +62,19 @@ func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry
 //
 // 注册成功后实例身份会被缓存（#75），DeregisterAs 优先用快照注销。
 //
-// 未配置 registrar 时返回 ErrRegistrarUnavailable；服务名为空时返回
-// ErrServiceNameRequired（参数校验先于环境检查——空服务名是调用方的错，
-// 报「registrar 不可用」会把它掩盖掉）。
+// 未配置 registrar（mock/未启用注册发现）时是幂等 no-op success（#66），
+// 不返回错误——与 Register 一致，注销对称性不再依赖调用方纪律。
+// ErrRegistrarUnavailable 自 #66 起**不再被任何入口返回**（仅兼容保留符号，
+// 见其声明），任何 errors.Is(err, ErrRegistrarUnavailable) 分支都不会命中。
+// 服务名为空时返回 ErrServiceNameRequired（参数校验先于环境检查——空服务名
+// 是调用方的错，报「registrar 不可用」会把它掩盖掉）。
 func (c *ServiceClient) RegisterAs(ctx context.Context, serviceName string, port int, opts ...registry.RegisterOptionFunc) error {
 	if serviceName == "" {
 		return ErrServiceNameRequired
 	}
 	if c.registrar == nil {
 		// #66：同 Register——no-op success（幂等，注销对称性不再依赖调用方纪律）
-		log.Info("no registrar configured (mock or discovery disabled), deregister is a no-op")
+		log.Info("no registrar configured (mock or discovery disabled), register is a no-op")
 		return nil
 	}
 

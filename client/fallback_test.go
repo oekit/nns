@@ -187,12 +187,42 @@ func TestDeregisterAs_NoRegistrar_NoError(t *testing.T) {
 func TestRegisterAs_NoRegistrar_NoOpSuccess(t *testing.T) {
 	// #66 行为变更：no registrar = 幂等 no-op success（原断言期望
 	// ErrRegistrarUnavailable——「没注册器」不是错误）。
+	//
+	// #126：把恒真断言 errors.Is(x, x)（实现是否返回哨兵都绿）换成行为
+	// 断言——无 registrar 的注册/注销入口**恒不返回** ErrRegistrarUnavailable，
+	// 哨兵仅兼容保留（#66 起任何 errors.Is(err, ErrRegistrarUnavailable)
+	// 分支都不会命中）。
+	c := &ServiceClient{}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"Register", c.Register(context.Background(), 8080)},
+		{"RegisterAs", c.RegisterAs(context.Background(), "svc-x", 8080)},
+		{"DeregisterAs", c.DeregisterAs(context.Background(), "svc-x", 8080)},
+	} {
+		if tc.err != nil {
+			t.Fatalf("%s: no registrar should be no-op success, got %v", tc.name, tc.err)
+		}
+		if errors.Is(tc.err, ErrRegistrarUnavailable) {
+			t.Fatalf("%s: must never return ErrRegistrarUnavailable after #66 (sentinel kept for compat only)", tc.name)
+		}
+	}
+}
+
+// TestRegisterAs_NoRegistrar_LogSaysRegister 钉住 #126 的复制粘贴错：
+// **注册**路径的 no-op 日志此前写的是 "deregister is a no-op"。
+func TestRegisterAs_NoRegistrar_LogSaysRegister(t *testing.T) {
+	logs := captureLogs(t)
 	c := &ServiceClient{}
 	if err := c.RegisterAs(context.Background(), "svc-x", 8080); err != nil {
-		t.Fatalf("no registrar should be no-op success, got %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if !errors.Is(ErrRegistrarUnavailable, ErrRegistrarUnavailable) {
-		t.Fatal("sentinel must stay for compat")
+	if !logs.contains("register is a no-op") {
+		t.Fatalf("register path must log 'register is a no-op', captured: %v", logs.snapshot())
+	}
+	if logs.contains("deregister is a no-op") {
+		t.Fatalf("register path must not log 'deregister is a no-op' (copy-paste bug, #126), captured: %v", logs.snapshot())
 	}
 }
 

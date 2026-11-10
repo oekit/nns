@@ -1,3 +1,21 @@
+## [Unreleased]
+
+- fix(client): RegisterAs godoc 与哨兵声明对齐 no-op success 实现（#126）——#66 起未配置 registrar 为幂等 no-op success，ErrRegistrarUnavailable 仅兼容保留、不再返回（全仓零返回点，errors.Is 分支永不命中）；顺带修正注册路径 no-op 日志误写 "deregister is a no-op" 的复制粘贴错，fallback_test 恒真断言（errors.Is(x,x) 恒真）换成「无 registrar 时恒不返回哨兵」的行为断言
+
+关联问题单：oekit/nns#126。
+
+- fix(client): BindServiceBasic 不再改写显式配置的 <50ms 超时（#127）——只对未配置（<=0）回填默认值，1–49ms 低延迟显式值原样保留（Warn 防呆不改写）；Retry 负值钳 0、>15 不再静默钳 15（改写必留日志）；配置中心原文与生效值一致
+
+关联问题单：oekit/nns#127。
+
+- fix(client): 运行期静态实例入口语义显式化（#128）——新增 AddStaticFallback/SetStaticFallback 兜底语义入口（热加备用地址不再切断注册中心发现）；AddStaticInstance/SetStaticInstances 切到静态短路时 Warn 点明后果、已有 fallbackOnly 语义标记跟随不被改写；文档补写发现路径影响
+
+关联问题单：oekit/nns#128。
+
+- fix(client): GetAllInstances 与 GetInstances 容错/静态语义同口径（#129）——短路判定、失败 stale/静态兜底、空结果兜底、mock/无 discoverer 降级分支全对齐（结果不写入健康视图缓存），同一配置两个发现入口不再给出不同实例面、管理/监控路径不再注册中心一错到底
+
+关联问题单：oekit/nns#129。
+
 ## [v0.5.17] — 2026-11-10
 
 - - build: 依赖地板对齐（第二轮发版后 floor sync，无代码变更）

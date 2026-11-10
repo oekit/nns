@@ -16,8 +16,14 @@ import (
 
 var nnsLog = logx.Delegating("nns")
 
-// ErrRegistrarUnavailable 在 ServiceClient.Register 被调用但未配置 registrar 时返回。
-// 常见场景：未注入 registrar、Mock 模式未启用、provider 构造失败降级。
+// ErrRegistrarUnavailable 历史上在 ServiceClient.Register 被调用但未配置
+// registrar 时返回。常见场景：未注入 registrar、Mock 模式未启用、provider
+// 构造失败降级。
+//
+// #66 起「没注册器」改为幂等 no-op success，本哨兵**不再被任何入口返回**
+// （全仓零返回点），仅为兼容保留符号：消费方照旧编译不报错，但
+// errors.Is(err, ErrRegistrarUnavailable) 分支永不命中，不应再写依赖它的
+// 错误分叉（判「没注册器」请直接看 MockMode()/Registrar()）。
 var ErrRegistrarUnavailable = errors.New("nns: registrar not available")
 
 // ErrServiceNameRequired 在显式指定服务名的注册/注销入口（RegisterAs /

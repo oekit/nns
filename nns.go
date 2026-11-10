@@ -335,16 +335,38 @@ func (n *NNSClient) Unsubscribe(ctx context.Context, serviceName string) error {
 	return n.client.UnsubscribeService(ctx, serviceName)
 }
 
-// AddStaticInstance 向指定服务追加静态实例地址。
+// AddStaticInstance 向指定服务追加静态实例地址（**短路**语义）。
+//
+// ⚠️ 会改变发现路径（#128）：缺省降级序下该服务随即短路注册中心。运行期
+// 热加备用地址请用 AddStaticFallback（兜底语义）。切路径时打 Warn。
 // 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func (n *NNSClient) AddStaticInstance(serviceName string, instances ...registry.Instance) {
 	n.client.AddStaticInstance(serviceName, instances...)
 }
 
-// SetStaticInstances 设置指定服务的静态实例列表（覆盖原有）。
-// 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
+// SetStaticInstances 设置指定服务的静态实例列表（覆盖原有，**短路**语义）。
+//
+// ⚠️ 同 AddStaticInstance：会改变发现路径（#128），热加备用地址请用
+// SetStaticFallback。权重与 WithStaticInstance 同口径：Weight<=0 回填默认
+// 权重 10。
 func (n *NNSClient) SetStaticInstances(serviceName string, instances []registry.Instance) {
 	n.client.SetStaticInstances(serviceName, instances)
+}
+
+// AddStaticFallback 向指定服务追加**兜底**静态实例（与 WithStaticFallback
+// 同语义）。
+//
+// 不改变发现路径（#128）：注册中心仍是第一数据源，注册中心路径失败或返回
+// 空时静态实例才参与取值。运行期热加备用地址用它。权重口径与
+// AddStaticInstance 一致。
+func (n *NNSClient) AddStaticFallback(serviceName string, instances ...registry.Instance) {
+	n.client.AddStaticFallback(serviceName, instances...)
+}
+
+// SetStaticFallback 设置指定服务的**兜底**静态实例（覆盖原有，与
+// WithStaticFallback 同语义）。不改变发现路径（#128）。
+func (n *NNSClient) SetStaticFallback(serviceName string, instances []registry.Instance) {
+	n.client.SetStaticFallback(serviceName, instances)
 }
 
 // Close 关闭 NNSClient 持有的所有资源（ServiceClient 的配置/实例订阅、
