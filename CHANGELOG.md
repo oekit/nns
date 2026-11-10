@@ -12,6 +12,10 @@
 
 关联问题单：oekit/nns#128。
 
+- fix(client): GetAllInstances 与 GetInstances 容错/静态语义同口径（#129）——短路判定、失败 stale/静态兜底、空结果兜底、mock/无 discoverer 降级分支全对齐（结果不写入健康视图缓存），同一配置两个发现入口不再给出不同实例面、管理/监控路径不再注册中心一错到底
+
+关联问题单：oekit/nns#129。
+
 ## [v0.5.17] — 2026-11-10
 
 - - build: 依赖地板对齐（第二轮发版后 floor sync，无代码变更）
