@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 	"github.com/oekit/registry/registrymocks"
 )
@@ -187,14 +188,77 @@ func TestDeregisterAs_NoRegistrar_NoError(t *testing.T) {
 func TestRegisterAs_NoRegistrar_NoOpSuccess(t *testing.T) {
 	// #66 行为变更：no registrar = 幂等 no-op success（原断言期望
 	// ErrRegistrarUnavailable——「没注册器」不是错误）。
+	// nns#126：此处断言「恒不返回 ErrRegistrarUnavailable」的行为面，
+	// 替换原先 errors.Is(x, x) 恒真的同义反复——哨兵是否真被返回都绿，
+	// 兼容承诺无人守护。
 	c := &ServiceClient{}
-	if err := c.RegisterAs(context.Background(), "svc-x", 8080); err != nil {
+	err := c.RegisterAs(context.Background(), "svc-x", 8080)
+	if err != nil {
 		t.Fatalf("no registrar should be no-op success, got %v", err)
 	}
-	if !errors.Is(ErrRegistrarUnavailable, ErrRegistrarUnavailable) {
-		t.Fatal("sentinel must stay for compat")
+	if errors.Is(err, ErrRegistrarUnavailable) {
+		t.Fatal("no registrar path must never return ErrRegistrarUnavailable (doc contract, nns#126)")
 	}
 }
+
+// TestRegisterAs_NoRegistrar_LogSaysRegister 钉住 nns#126 的日志面：
+// RegisterAs 无 registrar 的 no-op 日志必须说 register——此前复制粘贴自
+// 注销路径，文本是 "deregister is a no-op"，排障时按日志 grep 注册路径
+// 永远命不中。哨兵文档（ErrRegistrarUnavailable）同步改写为「仅兼容保留、
+// 无返回点」，与 no-op success 行为一致。
+func TestRegisterAs_NoRegistrar_LogSaysRegister(t *testing.T) {
+	var msgs []string
+	prev := logx.Default()
+	logx.SetDefault(&captureLogger{msgs: &msgs})
+	t.Cleanup(func() { logx.SetDefault(prev) })
+
+	c := &ServiceClient{}
+	if err := c.RegisterAs(context.Background(), "svc-x", 8080); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	const want = "no registrar configured (mock or discovery disabled), register is a no-op"
+	found := false
+	for _, m := range msgs {
+		if m == want {
+			found = true
+		}
+		if m == "no registrar configured (mock or discovery disabled), deregister is a no-op" {
+			t.Errorf("RegisterAs no-op log still says 'deregister' (copy-paste, nns#126): %q", m)
+		}
+	}
+	if !found {
+		t.Errorf("expected RegisterAs no-op log %q, got %v", want, msgs)
+	}
+}
+
+// captureLogger 记录 Info 消息文本的 logx.Logger 测试替身（其余方法空转）。
+type captureLogger struct {
+	msgs *[]string
+}
+
+func (l *captureLogger) Info(msg string, _ ...any) { *l.msgs = append(*l.msgs, msg) }
+
+func (l *captureLogger) Debug(string, ...any)                      {}
+func (l *captureLogger) Warn(string, ...any)                       {}
+func (l *captureLogger) Error(string, ...any)                      {}
+func (l *captureLogger) Debugf(string, ...any)                     {}
+func (l *captureLogger) Infof(string, ...any)                      {}
+func (l *captureLogger) Warnf(string, ...any)                      {}
+func (l *captureLogger) Errorf(string, ...any)                     {}
+func (l *captureLogger) CtxDebug(context.Context, string, ...any)  {}
+func (l *captureLogger) CtxInfo(context.Context, string, ...any)   {}
+func (l *captureLogger) CtxWarn(context.Context, string, ...any)   {}
+func (l *captureLogger) CtxError(context.Context, string, ...any)  {}
+func (l *captureLogger) CtxDebugf(context.Context, string, ...any) {}
+func (l *captureLogger) CtxInfof(context.Context, string, ...any)  {}
+func (l *captureLogger) CtxWarnf(context.Context, string, ...any)  {}
+func (l *captureLogger) CtxErrorf(context.Context, string, ...any) {}
+func (l *captureLogger) WithCtx(context.Context) logx.Logger       { return l }
+func (l *captureLogger) WithAttrs(...logx.Attr) logx.Logger        { return l }
+func (l *captureLogger) WithService(string) logx.Logger            { return l }
+func (l *captureLogger) WithGroup(string) logx.Logger              { return l }
+func (l *captureLogger) SetLevel(logx.Level)                       {}
 
 // Registrar / Discoverer 逃生口（nns#30 顺带限制：门面不给 getter）。
 func TestAccessors_RegistrarDiscoverer(t *testing.T) {
