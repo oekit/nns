@@ -95,23 +95,68 @@ func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([
 
 // GetAllInstances 获取指定服务的全部实例列表（包括不健康的实例）。
 // 使用 singleflight 保护并发请求，避免缓存击穿。
+//
+// 容错/静态语义与 GetInstances 同口径（nns#129）：此前本入口不看静态短路
+// 判定（短路配置的服务照样打注册中心）、失败不降级 stale 缓存/兜底静态、
+// mock/降级分支把兜底服务当短路返回——同一配置两个发现入口给出不同实例面
+// （管理台列表与调用路由不一致；注册中心故障时请求路径靠 stale/静态继续
+// 跑，巡检/对账直接报错）。统一后共享同一优先序骨架，差别只有两点：
+//   - 数据源走 DiscoverAll（全量视图，含不健康实例），GetInstances 走
+//     Discover（路由视图）；
+//   - 不做「新鲜缓存快路径」、DiscoverAll 结果**不回写**实例缓存——缓存
+//     存的是路由视图（Discover/Subscribe 维护），读它或写入不健康实例都会
+//     让「全部实例」失真；注册中心不可用时才读 stale 缓存兜底（口径与
+//     GetInstances 第 5/6 级一致：宁可过期数据，不硬报错）。
 func (c *ServiceClient) GetAllInstances(ctx context.Context, serviceName string) ([]registry.Instance, error) {
-	if c.mockMode || c.discoverer == nil {
+	// 1. 短路语义的静态配置（与 GetInstances 第 1 级同口径）
+	if c.staticShortCircuits(serviceName) {
+		c.mu.RLock()
+		static := c.staticInstances[serviceName]
+		c.mu.RUnlock()
+		return copyInstances(static), nil
+	}
+
+	// 2. Mock 模式（与 GetInstances 第 2 级同实现：mock 下静态是唯一数据源）
+	if c.mockMode {
 		return c.getInstancesFromStaticOrCache(serviceName), nil
 	}
 
+	// 3. 无 Discoverer 的降级态（与 GetInstances 第 3/4 级同口径：缓存/静态
+	//    是仅有的视图，兜底静态不再被当短路返回）
+	if c.discoverer == nil {
+		if cached := c.getInstancesFromCache(serviceName); cached != nil {
+			return c.withStaticFallback(serviceName, cached), nil
+		}
+		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
+			return fb, nil
+		}
+		return nil, fmt.Errorf("no discoverer available and no cached instances for [%s]", serviceName)
+	}
+
+	// 4. DiscoverAll（singleflight 保护并发，"all:" 键与路由视图分开折叠）
 	result, err := c.discoverSfg.Do(ctx, "all:"+serviceName, func(ctx context.Context) ([]registry.Instance, error) {
 		rawInstances, derr := c.discoverer.DiscoverAll(ctx, serviceName)
 		if derr != nil {
-			return nil, fmt.Errorf("discover all instances [%s]: %w", serviceName, derr)
+			return nil, derr
 		}
 		return rawInstances, nil
 	})
 	if err != nil {
-		return nil, err
+		// 失败降级与 GetInstances 第 5/6 级同口径：stale 缓存 → 兜底静态
+		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
+			nnsLog.Warn("discover all failed, falling back to stale cache", "service", serviceName, "err", err)
+			return cached, nil
+		}
+		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
+			nnsLog.Warn("discover all failed, falling back to static instances", "service", serviceName, "err", err)
+			return fb, nil
+		}
+		return nil, fmt.Errorf("discover all instances [%s]: %w", serviceName, err)
 	}
+
+	// 5. 注册中心返回空列表 → 兜底静态（与 GetInstances 第 6 级同口径）
 	// 返回拷贝，避免 singleflight 等待方共享同一可变切片
-	return copyInstances(result), nil
+	return c.withStaticFallback(serviceName, copyInstances(result)), nil
 }
 
 // getInstancesFromStaticOrCache 从静态配置或缓存获取实例
