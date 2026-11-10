@@ -8,7 +8,7 @@ require (
 	github.com/oekit/logx v0.9.1
 	github.com/oekit/registry v0.5.12
 	github.com/oekit/registry/nacos v0.1.12
-	github.com/oekit/registry/nacosimpl v0.1.12
+	github.com/oekit/registry/nacosimpl v0.1.13
 )
 
 require (
