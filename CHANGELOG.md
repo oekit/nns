@@ -1,4 +1,4 @@
-## [Unreleased]
+## [v0.6.0] — 2026-11-11
 
 - fix(client): RegisterAs godoc 与哨兵声明对齐 no-op success 实现（#126）——#66 起未配置 registrar 为幂等 no-op success，ErrRegistrarUnavailable 仅兼容保留、不再返回（全仓零返回点，errors.Is 分支永不命中）；顺带修正注册路径 no-op 日志误写 "deregister is a no-op" 的复制粘贴错，fallback_test 恒真断言（errors.Is(x,x) 恒真）换成「无 registrar 时恒不返回哨兵」的行为断言
 
