@@ -1,10 +1,8 @@
 package metadata
 
 import (
-	"encoding/json"
 	"regexp"
 	"strings"
-	"time"
 )
 
 // ServiceName 服务全名，包含区域、业务线和协议等维度信息。
@@ -153,60 +151,12 @@ func NewServiceBasic() *ServiceBasic {
 	}
 }
 
-// GetEndpoints 将 Endpoints 字段解析为 Endpoint 列表。
-func (sb *ServiceBasic) GetEndpoints() []Endpoint {
-	var eps []Endpoint
-	if sb.Endpoints == nil {
-		return eps
-	}
-
-	data, err := json.Marshal(sb.Endpoints)
-	if err != nil {
-		return eps
-	}
-
-	if err := json.Unmarshal(data, &eps); err != nil {
-		return eps
-	}
-	return eps
-}
-
-// GetTimeoutRetryConfig 按**接口名**获取超时重试配置，返回 (timeout, retry, hit)。
+// #139（2026-11-12 清零战役）删除了三个零引用导出成员（全工作区含
+// kitex/hertz/nns-endpoint/httpx/middleware 消费仓 grep 复核均零引用）：
+//   - GRPCOption：与 nns-endpoint 的 GRPCRequest 完全重叠，连测试引用都没有；
+//   - ServiceBasic.GetEndpoints：仅本包测试调用（Endpoints 字段本身保留，
+//     JSON 配置面不变）；
+//   - ServiceBasic.GetTimeoutRetryConfig：仅本包测试调用，且 protocol/
+//     serviceName 两参数从不参与匹配（假维度签名）。
 //
-// ⚠️ **只有 api 参与匹配**：规则项 `TimeoutRetry` 只有 `Api`/`Type` 两个维度，
-// **没有协议与服务名字段**，因此 protocol 与 serviceName 当前无法参与匹配。
-// 此前本函数的文档写的是「根据协议、服务名和接口名获取」——与实现不符
-// （2/3 的参数被静默忽略），照文档理解会以为「换个协议查到的规则不同」，
-// 实际拿到的是同一条规则。
-//
-// 两个参数保留是为了将来规则项支持协议/服务名维度后不必改签名；届时本函数
-// 的匹配口径会变（当前不参与匹配）。
-//
-// 命中条件：存在一条 Enable 为 true 且 Api == api 的规则。命中返回该规则的
-// timeout/retry；未命中返回 (0, 0, false)。
-func (sb *ServiceBasic) GetTimeoutRetryConfig(protocol, serviceName, api string) (timeout int, retry int, hit bool) {
-	if sb == nil {
-		return
-	}
-
-	for _, item := range sb.TimeoutRetryCfg {
-		if item == nil || !item.Enable {
-			continue
-		}
-
-		if item.Api == api {
-			return item.Timeout, item.Retry, true
-		}
-	}
-
-	return 0, 0, false
-}
-
-// GRPCOption gRPC 调用选项。
-type GRPCOption struct {
-	ServiceName     string
-	GrpcServiceName string
-	Method          string
-	Timeout         time.Duration
-	Retry           int
-}
+// 导出面删除按 minor + BREAKING 声明发版（0.x 阶段 minor 允许 breaking）。

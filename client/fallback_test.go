@@ -443,28 +443,58 @@ func TestGetInstances_MockMode_StaticFallback(t *testing.T) {
 	}
 }
 
-// 兜底池返回的是拷贝——调用方改写不得污染内部静态配置。
-func TestStaticFallbackPool_ReturnsCopy(t *testing.T) {
+// #149 快照契约（原 TestStaticFallbackPool_ReturnsCopy 的「返回私有拷贝」
+// 契约随热路径零拷贝化收紧为「返回只读快照」，见 GetInstances godoc）：
+// 本组用例钉住 RCU 的不变式——本包绝不原地改写已发布快照，更新整体替换。
+func TestReturnedSnapshots_UpdatesReplaceWholesale(t *testing.T) {
+	c := newTestClient(t, WithDiscoverer(&registrymocks.Discoverer{}))
+	c.updateCache("svc", []registry.Instance{
+		{IP: "10.0.0.1", Port: 8080, Metadata: map[string]string{"k": "v"}},
+	})
+	ctx := context.Background()
+
+	first, err := c.GetInstances(ctx, "svc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 推送更新：整体替换，旧快照内容恒定（持有旧引用的调用方不受影响）
+	c.updateCache("svc", []registry.Instance{{IP: "10.0.0.2", Port: 8080}})
+	if first[0].IP != "10.0.0.1" || first[0].Metadata["k"] != "v" {
+		t.Fatalf("#149 RCU 违约：旧快照被原地改写（got IP=%s meta=%v）", first[0].IP, first[0].Metadata)
+	}
+
+	second, err := c.GetInstances(ctx, "svc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(second) != 1 || second[0].IP != "10.0.0.2" {
+		t.Fatalf("新读取应可见更新后的快照, got %+v", second)
+	}
+}
+
+func TestStaticSnapshots_AppendPublishesFreshSlice(t *testing.T) {
 	static := []registry.Instance{{IP: "10.0.0.1", Port: 8080, Metadata: map[string]string{"k": "v"}}}
 	c := newTestClient(t, WithStaticFallback("svc", static))
+	ctx := context.Background()
 
-	instances, err := c.GetInstances(context.Background(), "svc")
+	first, err := c.GetInstances(ctx, "svc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	instances[0].IP = "9.9.9.9"
-	instances[0].Metadata["k"] = "mutated"
 
-	c2 := newTestClient(t, WithStaticFallback("svc", static))
-	again, err := c2.GetInstances(context.Background(), "svc")
+	// 追加写入发布全新切片：先前发出的快照不被原地改写
+	c.AddStaticFallback("svc", registry.Instance{IP: "10.0.0.2", Port: 8080})
+	if len(first) != 1 || first[0].IP != "10.0.0.1" || first[0].Metadata["k"] != "v" {
+		t.Fatalf("#149 RCU 违约：静态追加污染了已发布快照, got %+v", first)
+	}
+
+	again, err := c.GetInstances(ctx, "svc")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if again[0].IP != "10.0.0.1" {
-		t.Errorf("IP mutated: got %s, want 10.0.0.1", again[0].IP)
-	}
-	if again[0].Metadata["k"] != "v" {
-		t.Errorf("metadata mutated: got %q, want v", again[0].Metadata["k"])
+	if len(again) != 2 {
+		t.Fatalf("追加后应可见 2 个实例, got %+v", again)
 	}
 }
 

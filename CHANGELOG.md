@@ -1,3 +1,20 @@
+## [v0.7.0] — 2026-11-12
+
+- **BREAKING**（0.x minor 允许 breaking，#139）——删除三个零引用导出成员：`metadata.GRPCOption`（与 nns-endpoint 的 GRPCRequest 重叠）、`ServiceBasic.GetEndpoints`、`ServiceBasic.GetTimeoutRetryConfig`（假维度签名：protocol/serviceName 两参数从不参与匹配）。删前全工作区（含 kitex/hertz/nns-endpoint/httpx/middleware 消费仓）grep 复核零引用；`ServiceBasic.Endpoints` 字段保留，JSON 配置面不变
+- **BREAKING**（契约收紧，#149）——`GetInstances`/`GetAllInstances` 返回值及 `SubscribeService` 回调入参收紧为**已发布只读快照**：调用方不得修改实例及 Metadata map（热路径零拷贝的契约代价，编译不受影响，全矩阵消费仓复核均只读使用）；持有旧快照不受后续更新影响（RCU 整体替换）
+- fix(client)（#147 [P1]）：`UnsubscribeService` 与 `SubscribeService` 并发竞态——新增 per-service `unsubscribing` 状态，退订期间并发新订阅等待退订落地后再注册，修复「provider 退订拆掉窗口内新监听、本地标记已订阅后永不恢复」的服务路由静默僵死；-race 回归测试（旧实现红/新实现绿）
+- feat(client)（#148，minor 增量）：新增 `ServiceClient.UnwatchService(ctx, serviceName)`——配置监听单独退订入口（摘去重标记 + StopListenConfig，失败回滚可重试，幂等 no-op），不再只能随 Close 全量终结
+- refactor(client)（#141）：`GetInstances`/`GetAllInstances` 的 6 级降级链双写收敛为 `resolveInstances` 单源（discover 闭包 / cacheWrite / singleflight "all:" 前缀参数化）——优先级对齐从注释纪律变成结构保证
+- refactor(client)（#142）：`Register`/`RegisterAs`/`Deregister`/`DeregisterAs` 两两复制收敛为 `registerAs`/`deregisterAs` 私有方法（no-op 守卫、#75 快照缓存口径不变）
+- refactor(client)（#143）：静态实例写入口 6 处同构收敛为锁内 `setStaticLocked`（`fallbackMarkKind` 三态：运行期短路写不追改语义标记）+ 门面 `addStaticOpt`；追加/覆盖一律发布全新切片
+- refactor(client)（#144）：`ServiceWithName` 兜底块三连复制与 `ServiceConfig` 主干同构收敛为 `fetchServiceConfig` + `defaultBasicWithServiceName`（吞/抛错误面与分阶段错误文案不变）
+- refactor(client)（#145）：同包双 logger 统一为 `nnsLog`（component 统一 "nns"，注册路径不再漂移）
+- refactor(client)（#146）：`GetRegistrar()` 标记 Deprecated 转发 `Registrar()`（双访问器收敛，kitex/hertz 适配层迁移前保留）
+- perf(client)（#149 [P3]）：实例缓存改 RCU 只读快照——`updateCache` 发布即深拷贝解耦 provider 内存、整体替换；读路径零拷贝。基准（100 实例×4 元数据键）：GetInstances 缓存命中 11341 ns/op · 201 allocs/op → 30 ns/op · 0 allocs/op（BenchmarkGetInstances_CacheHit_*）
+- build：Go 地板 1.24.0 → 1.26.0（ci.yml go-version 同步 '1.26'）；依赖地板对齐 logx v0.10.0、registry v0.5.15、registry/nacos v0.1.14、registry/nacosimpl v0.2.0（均矩阵地板对齐发布，无功能变更）
+
+关联问题单：nns#139、nns#141、nns#142、nns#143、nns#144、nns#145、nns#146、nns#147、nns#148、nns#149。
+
 ## [v0.6.0] — 2026-11-11
 
 - fix(client): RegisterAs godoc 与哨兵声明对齐 no-op success 实现（#126）——#66 起未配置 registrar 为幂等 no-op success，ErrRegistrarUnavailable 仅兼容保留、不再返回（全仓零返回点，errors.Is 分支永不命中）；顺带修正注册路径 no-op 日志误写 "deregister is a no-op" 的复制粘贴错，fallback_test 恒真断言（errors.Is(x,x) 恒真）换成「无 registrar 时恒不返回哨兵」的行为断言

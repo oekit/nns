@@ -208,6 +208,44 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 	})
 }
 
+// UnwatchService 取消指定服务的配置监听（WatchService 的对称退订入口，
+// #148）。
+//
+// 此前配置监听只能随 Close 全量终结：动态增删依赖服务的场景（网关按配置
+// 热加载 dep 列表）里，下线服务的监听与 goroutine 只能积累到进程 Close。
+// 本入口摘除去重标记并 StopListenConfig（ConfigStore 按 dataId 取消监听，
+// Close 路径同款机制），单个服务的配置监听可独立回收。
+//
+// 未监听过的服务是幂等 no-op（返回 nil）；Mock 模式或未注入 ConfigStore
+// 时同样 no-op（与 WatchService 的 no-op 对称）。取消后可重新 WatchService。
+// 监听注册是异步的：WatchService 刚返回时后台注册可能尚未完成，此刻调用
+// 本方法对「已在途的注册」由 StopListenConfig 的 dataId 粒度取消兜底。
+func (c *ServiceClient) UnwatchService(ctx context.Context, serviceName string) error {
+	if c.mockMode || c.configStore == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	if !c.watchedServices[serviceName] {
+		c.mu.Unlock()
+		return nil
+	}
+	delete(c.watchedServices, serviceName)
+	c.mu.Unlock()
+
+	if err := c.configStore.StopListenConfig(ctx, serviceName, c.configGroup); err != nil {
+		// 失败回滚去重标记：与 WatchService 注册失败的回滚同口径，
+		// 允许重试 UnwatchService
+		c.mu.Lock()
+		if c.watchedServices != nil {
+			c.watchedServices[serviceName] = true
+		}
+		c.mu.Unlock()
+		return fmt.Errorf("stop listen config [%s]: %w", serviceName, err)
+	}
+	return nil
+}
+
 // safeInvoke 带 panic 隔离地执行用户回调：
 // 这些回调运行在 provider SDK 的回调 goroutine 内，用户回调 panic 不允许击穿进程。
 func safeInvoke(kind, serviceName string, fn func()) {

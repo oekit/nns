@@ -91,7 +91,16 @@ type ServiceClient struct {
 	//
 	// 后到者改为等待在途注册的结果：成功则复用，失败则由它接手重试。
 	subscribing map[string]*subscribeCall
-	callbackMu  sync.RWMutex
+	// unsubscribing 记录**正在注销** SDK 监听的服务（#147）。
+	//
+	// UnsubscribeService 删本地标记与 provider 侧退订不是原子的：若并发
+	// SubscribeService 在「本地已清、provider.Unsubscribe 还在途」的窗口里
+	// 完成新订阅，这次退订会把新监听一并拆除，而本地已标记为已订阅 ⇒
+	// 永不重注册 ⇒ 实例变更推送全部丢失（服务路由静默僵死）。退订期间
+	// ensureSubscribe 见到本标记时像对待在途注册一样等待其结束，窗口闭合。
+	// 与 subscribing 复用同一结构（done 关闭即退订已出结果）。
+	unsubscribing map[string]*subscribeCall
+	callbackMu    sync.RWMutex
 
 	// 生命周期：closed 是 atomic（#96——Close 持 c.mu 写、SubscribeService
 	// 持 callbackMu 读，两把锁无 happens-before 边，bool 有数据竞争），
@@ -154,13 +163,12 @@ func WithMockMode(enabled bool) ClientOption {
 // 显式正权重原样保留——见 normalizeStaticInstances。
 func WithStaticInstances(serviceName string, instances []registry.Instance) ClientOption {
 	return func(c *ServiceClient) {
-		if c.staticInstances == nil {
-			c.staticInstances = make(map[string][]registry.Instance)
-		}
-		c.staticInstances[serviceName] = normalizeStaticInstances(instances)
-		if c.fallbackOnly != nil {
-			delete(c.fallbackOnly, serviceName)
-		}
+		// 与运行期写入口共用锁内实现（#143）：归一化 + 清兜底标记 +
+		// 发布全新切片（#149 读路径直接引用已发布快照）。构造期单线程，
+		// 加锁仅为复用同一实现。
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.setStaticLocked(serviceName, instances, false, fallbackClear)
 	}
 }
 
@@ -265,6 +273,7 @@ func New(opts ...ClientOption) *ServiceClient {
 		instanceCallbacks:  make(map[string][]*instanceCallback),
 		subscribedServices: make(map[string]bool),
 		subscribing:        make(map[string]*subscribeCall),
+		unsubscribing:      make(map[string]*subscribeCall),
 		instanceCache:      make(map[string][]registry.Instance),
 		cacheLastUpdate:    make(map[string]time.Time),
 		staticInstances:    make(map[string][]registry.Instance),
