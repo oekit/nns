@@ -1,3 +1,9 @@
+## [v0.8.0] — 2026-11-12
+
+- feat(client): OnConfigChange 返回注销句柄 + 新增 OffConfigChange 注销口（#157，oekit/nns-endpoint#135 对侧）——configChangeCallbacks 改存 ConfigChangeHandle 指针包装条目（与 instanceCallbacks 同口径：Go 函数值不可比较、指针可按身份摘除），OnConfigChange 返回句柄，OffConfigChange 按句柄精确注销（nil/重复注销/条目已随 Close 清空均幂等 no-op），事件分发循环适配指针条目、「分发时现读回调列表」语义不变。长生命周期 ServiceClient 不再经回调闭包长持已废弃的 endpoint factory。**BREAKING CHANGE**：OnConfigChange 签名新增返回值 *ConfigChangeHandle——语句式调用完全兼容；把 OnConfigChange 用作函数值再调用的代码需适配（全矩阵无此用法，0.x minor 允许）。
+
+关联问题单：nns#157。
+
 ## [v0.7.0] — 2026-11-12
 
 - **BREAKING**（0.x minor 允许 breaking，#139）——删除三个零引用导出成员：`metadata.GRPCOption`（与 nns-endpoint 的 GRPCRequest 重叠）、`ServiceBasic.GetEndpoints`、`ServiceBasic.GetTimeoutRetryConfig`（假维度签名：protocol/serviceName 两参数从不参与匹配）。删前全工作区（含 kitex/hertz/nns-endpoint/httpx/middleware 消费仓）grep 复核零引用；`ServiceBasic.Endpoints` 字段保留，JSON 配置面不变
