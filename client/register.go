@@ -5,11 +5,8 @@ import (
 	"fmt"
 
 	"github.com/oekit/core/network"
-	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 )
-
-var log = logx.Delegating("nns/client")
 
 // Register 向注册中心注册当前服务实例。
 //
@@ -19,30 +16,22 @@ var log = logx.Delegating("nns/client")
 // 注册成功后实例身份（IP/Group/Cluster 等）会被缓存（#75）：配套的
 // Deregister 优先用该快照注销，注册与注销之间 GetPodIP 结果变化、或注销时
 // 漏传 WithGroup/WithCluster，都不会再让注销静默失效。
+//
+// 未配置 registrar（mock/未启用注册发现）时是幂等 no-op success（#66），
+// 不返回错误——「本来就没注册」不是故障；no-op 判定先于服务名检查
+// （#142 收敛前后的行为保持：无 registrar 时即使未 Init 也返回 nil）。
 func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
+	// no-op 判定先于服务名检查：no registrar 时即使服务名未知也是 no-op
+	// success（#66，TestRegister_NoRegistrar_NoOpSuccess 钉住零值客户端）。
 	if c.registrar == nil {
-		// #66：「没注册器」（mock 模式/未启用注册发现）不是错误——幂等 no-op
-		// success，与 nns.enabled:false 的「不注册」语义对齐（mock 开箱即用）；
-		// 真故障（Nacos 连不上）走 registrar 内部 error 路径仍可区分。消费方
-		// 不再需要自维护 Enabled&&!Mock 门控布尔并保证注册/注销对称。
-		log.Info("no registrar configured (mock or discovery disabled), register is a no-op",
-			"port", port)
+		c.logRegisterNoOp(port)
 		return nil
 	}
 	name := c.getSelfServiceName()
 	if name == "" {
 		return fmt.Errorf("nns/client: service name unknown; call Init/LocalServiceInit before Register")
 	}
-
-	inst, err := c.buildInstance(name, port, opts...)
-	if err != nil {
-		return err
-	}
-	if err := c.registrar.Register(ctx, inst); err != nil {
-		return err
-	}
-	c.rememberRegistered(inst)
-	return nil
+	return c.registerAs(ctx, name, port, opts...)
 }
 
 // RegisterAs 向注册中心注册当前服务实例到**指定服务名**下。
@@ -73,11 +62,15 @@ func (c *ServiceClient) RegisterAs(ctx context.Context, serviceName string, port
 		return ErrServiceNameRequired
 	}
 	if c.registrar == nil {
-		// #66：同 Register——no-op success（幂等，注销对称性不再依赖调用方纪律）
-		log.Info("no registrar configured (mock or discovery disabled), register is a no-op")
+		c.logRegisterNoOp(port)
 		return nil
 	}
+	return c.registerAs(ctx, serviceName, port, opts...)
+}
 
+// registerAs 承载 Register/RegisterAs 的全部共同逻辑（#142）：buildInstance →
+// provider 注册 → 快照缓存。调用方负责各自的 no-op 守卫与服务名校验。
+func (c *ServiceClient) registerAs(ctx context.Context, serviceName string, port int, opts ...registry.RegisterOptionFunc) error {
 	inst, err := c.buildInstance(serviceName, port, opts...)
 	if err != nil {
 		return err
@@ -87,6 +80,16 @@ func (c *ServiceClient) RegisterAs(ctx context.Context, serviceName string, port
 	}
 	c.rememberRegistered(inst)
 	return nil
+}
+
+// logRegisterNoOp 统一 Register/RegisterAs 的 no-op 日志（#142/#145）。
+func (c *ServiceClient) logRegisterNoOp(port int) {
+	// #66：「没注册器」（mock 模式/未启用注册发现）不是错误——幂等 no-op
+	// success，与 nns.enabled:false 的「不注册」语义对齐（mock 开箱即用）；
+	// 真故障（Nacos 连不上）走 registrar 内部 error 路径仍可区分。消费方
+	// 不再需要自维护 Enabled&&!Mock 门控布尔并保证注册/注销对称。
+	nnsLog.Info("no registrar configured (mock or discovery disabled), register is a no-op",
+		"port", port)
 }
 
 // Deregister 从注册中心注销当前服务实例。
@@ -102,24 +105,7 @@ func (c *ServiceClient) RegisterAs(ctx context.Context, serviceName string, port
 // IP/Group/Cluster 与注册时完全一致。注销成功后缓存清除，再次 Deregister
 // 走现算路径。
 func (c *ServiceClient) Deregister(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
-	if c.registrar == nil {
-		return nil
-	}
-	name := c.getSelfServiceName()
-
-	inst, ok := c.recallRegistered(name, port)
-	if !ok {
-		var err error
-		inst, err = c.buildInstance(name, port, opts...)
-		if err != nil {
-			return err
-		}
-	}
-	if err := c.registrar.Deregister(ctx, inst); err != nil {
-		return err
-	}
-	c.forgetRegistered(name, port)
-	return nil
+	return c.deregisterAs(ctx, c.getSelfServiceName(), port, opts...)
 }
 
 // DeregisterAs 从注册中心注销指定服务名下的当前服务实例。
@@ -135,10 +121,15 @@ func (c *ServiceClient) DeregisterAs(ctx context.Context, serviceName string, po
 	if serviceName == "" {
 		return ErrServiceNameRequired
 	}
+	return c.deregisterAs(ctx, serviceName, port, opts...)
+}
+
+// deregisterAs 承载 Deregister/DeregisterAs 的全部共同逻辑（#142）：
+// 快照优先（#75）→ 兜底现算 → provider 注销 → 清缓存。
+func (c *ServiceClient) deregisterAs(ctx context.Context, serviceName string, port int, opts ...registry.RegisterOptionFunc) error {
 	if c.registrar == nil {
 		return nil
 	}
-
 	inst, ok := c.recallRegistered(serviceName, port)
 	if !ok {
 		var err error

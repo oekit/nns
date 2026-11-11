@@ -14,6 +14,10 @@ import (
 // 去重路径（他人已注册监听）下，新回调会立即收到一次当前静态/缓存实例的
 // 初始回调——SDK 推送是事件驱动的，若 provider 首推已过，否则新订阅方会
 // "看似订阅成功却迟迟无回调"。Close 后调用返回 ErrClientClosed。
+//
+// 回调收到的 []registry.Instance 为**只读快照**（#149）：推送路径是与
+// provider 内存解耦的私有副本，初始回调是内部已发布快照的引用；两者均
+// 不得修改（快照契约见 GetInstances godoc）。
 func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string, callback func([]registry.Instance)) error {
 	c.callbackMu.Lock()
 	// Close 是终结操作：关闭后 SDK 客户端已 CloseClient，再向其注册监听
@@ -81,6 +85,21 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 			c.callbackMu.Unlock()
 			return false, nil
 		}
+		// 有在途退订 ⇒ 等它结束再决策（#147）：否则「本地已清、provider
+		// Unsubscribe 还在途」的窗口里本方完成新订阅，那次退订会把这条
+		// **新监听**一并拆除，而本地已置 subscribedServices ⇒ 永不重注册 ⇒
+		// 实例变更推送全部丢失。等待后本地状态是干净的（未订阅），本方
+		// 接手注册即恢复监听。
+		if ucall, ok := c.unsubscribing[serviceName]; ok {
+			c.callbackMu.Unlock()
+			select {
+			case <-ucall.done:
+				continue
+			case <-ctx.Done():
+				c.rollbackEntry(serviceName, entry)
+				return false, ctx.Err()
+			}
+		}
 		// 有在途注册 ⇒ 等它的结果，醒来后重新决策。
 		if call, ok := c.subscribing[serviceName]; ok {
 			c.callbackMu.Unlock()
@@ -99,15 +118,7 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 				// 成功，已「失败返回」的回调会收到后续所有 SDK 推送且永不
 				// 清理。（此刻在途注册可能恰好完成：照样摘，本调用方拿到
 				// 的是错误，不该再收推送。）
-				c.callbackMu.Lock()
-				list := c.instanceCallbacks[serviceName]
-				for i, e := range list {
-					if e == entry {
-						c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
-						break
-					}
-				}
-				c.callbackMu.Unlock()
+				c.rollbackEntry(serviceName, entry)
 				return false, ctx.Err()
 			}
 		}
@@ -131,13 +142,7 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		if err != nil {
 			// 回滚：只摘除本次注册的条目（并发订阅方不受影响），
 			// 并把服务标记留在「未注册」⇒ 等待者接手重试。
-			list := c.instanceCallbacks[serviceName]
-			for i, e := range list {
-				if e == entry {
-					c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
-					break
-				}
-			}
+			c.rollbackEntryLocked(serviceName, entry)
 		} else {
 			c.subscribedServices[serviceName] = true
 		}
@@ -151,6 +156,25 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 	}
 }
 
+// rollbackEntry 按指针身份把 entry 从扇出列表摘除（自带锁）。
+func (c *ServiceClient) rollbackEntry(serviceName string, entry *instanceCallback) {
+	c.callbackMu.Lock()
+	defer c.callbackMu.Unlock()
+	c.rollbackEntryLocked(serviceName, entry)
+}
+
+// rollbackEntryLocked 是 rollbackEntry 的锁内版本（调用方必须已持有
+// callbackMu 写锁）。
+func (c *ServiceClient) rollbackEntryLocked(serviceName string, entry *instanceCallback) {
+	list := c.instanceCallbacks[serviceName]
+	for i, e := range list {
+		if e == entry {
+			c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+}
+
 // newDispatch 返回该服务的 SDK 推送派发回调。
 //
 // 每次注册一个：provider 侧对同一服务重复注册会**覆盖**上一次的回调
@@ -158,10 +182,12 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 // 把实例广播给列表里的所有订阅者。
 func (c *ServiceClient) newDispatch(serviceName string) func([]registry.Instance) {
 	return func(instances []registry.Instance) {
-		// 更新本地缓存（缓存保留原始切片，读取时已深拷贝）
+		// 发布缓存快照（updateCache 内部一次深拷贝，与 provider 推送的
+		// 私有内存解耦——上游复用缓冲不再可能腐蚀缓存，#149）
 		c.updateCache(serviceName, instances)
 
-		// 派发快照：回调拿到的是拷贝，避免单个回调修改污染其他回调与缓存
+		// 派发快照：回调拿到的是拷贝（与 provider 内存解耦），避免 provider
+		// 缓冲复用或单个回调修改影响其他回调
 		dispatch := copyInstances(instances)
 
 		c.callbackMu.RLock()
@@ -178,27 +204,63 @@ func (c *ServiceClient) newDispatch(serviceName string) func([]registry.Instance
 // 本地回调列表同步清除，避免再次 Subscribe 后旧回调重复触发。
 // 注意：取消针对整个服务生效（所有调用方的回调一并清除），
 // SDK 监听同时注销，下次 Subscribe 会重新注册。
+//
+// 并发纪律（#147）：「清本地状态 + 标记退订中」与「provider 退订」之间
+// 不是原子的。退订期间（unsubscribing 标记在位）并发 SubscribeService 会
+// 像 etc 等待在途注册一样等待退订落地后再注册新监听——否则本次 provider
+// 退订会把窗口里建立的新监听一并拆除，而本地已视为已订阅 ⇒ 永不重注册，
+// 实例变更推送全部丢失。并发多次 Unsubscribe 收敛：后来者等待首次退订
+// 结束后按「未订阅」状态重入（对 provider 幂等）。
 func (c *ServiceClient) UnsubscribeService(ctx context.Context, serviceName string) error {
-	// 等在途注册结束：否则「注册」与「注销」在 provider 侧的先后不可控——
-	// 注册可能落在注销之后 ⇒ 监听残留（本地标记已删，下次订阅会重复注册）。
-	c.callbackMu.Lock()
-	call := c.subscribing[serviceName]
-	c.callbackMu.Unlock()
-	if call != nil {
-		select {
-		case <-call.done:
-		case <-ctx.Done():
-			return ctx.Err()
+	for {
+		c.callbackMu.Lock()
+		// 等在途注册结束：否则「注册」与「注销」在 provider 侧的先后不可控——
+		// 注册可能落在注销之后 ⇒ 监听残留（本地标记已删，下次订阅会重复注册）。
+		if call, ok := c.subscribing[serviceName]; ok {
+			c.callbackMu.Unlock()
+			select {
+			case <-call.done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
 		}
-	}
+		// 已有在途退订 ⇒ 等它结束（并发退订去重到单个 provider 调用）。
+		if ucall, ok := c.unsubscribing[serviceName]; ok {
+			c.callbackMu.Unlock()
+			select {
+			case <-ucall.done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			continue
+		}
 
-	c.callbackMu.Lock()
-	delete(c.instanceCallbacks, serviceName)
-	delete(c.subscribedServices, serviceName)
-	c.callbackMu.Unlock()
+		ucall := &subscribeCall{done: make(chan struct{})}
+		if c.unsubscribing == nil {
+			c.unsubscribing = make(map[string]*subscribeCall)
+		}
+		c.unsubscribing[serviceName] = ucall
+		delete(c.instanceCallbacks, serviceName)
+		delete(c.subscribedServices, serviceName)
+		c.callbackMu.Unlock()
 
-	if c.mockMode || c.subscriber == nil {
-		return nil
+		if c.mockMode || c.subscriber == nil {
+			c.callbackMu.Lock()
+			delete(c.unsubscribing, serviceName)
+			c.callbackMu.Unlock()
+			close(ucall.done)
+			return nil
+		}
+
+		err := c.subscriber.Unsubscribe(ctx, serviceName)
+
+		// 先摘标记再唤醒等待者：醒来者看到的是「退订已落地、本地干净」的
+		// 终态，接手注册即恢复监听（#147）。
+		c.callbackMu.Lock()
+		delete(c.unsubscribing, serviceName)
+		c.callbackMu.Unlock()
+		close(ucall.done)
+		return err
 	}
-	return c.subscriber.Unsubscribe(ctx, serviceName)
 }

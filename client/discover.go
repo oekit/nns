@@ -3,6 +3,8 @@ package client
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/oekit/logx"
@@ -29,70 +31,23 @@ import (
 // 回落」（Mock 模式下未配静态实例的名字即走这条路径）。调用方只判 err 不判
 // len 会把请求路由到空——httpx 的 NNSResolver 判了 len 并回落 baseURL，
 // 本包的契约以此为准。
+//
+// # 快照契约（#149，原「每请求深拷贝」契约收紧）
+//
+// 返回的是内部**已发布只读快照**的引用：本包对实例数据只做「发布时一次
+// 深拷贝 + 整体替换」（RCU），绝不原地改写任何已发布的快照，也绝不外泄
+// provider/调用方拥有的可变内存。因此：
+//   - 调用方**不得修改**返回的实例（含 Metadata map）——改动对本进程后续
+//     读者可见（热路径零拷贝的代价）；需要私有可能改的副本请自行克隆；
+//   - 持有旧快照的调用方不受后续推送/发现更新影响（更新整体替换，旧快照
+//     内容恒定）；
+//   - 缓存命中热路径零分配（此前每请求深拷贝实例列表 + 每实例一个
+//     Metadata map，nns-endpoint 每请求调用的场景是可测量的稳态分配）。
 func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([]registry.Instance, error) {
-	// 1. 短路语义的静态配置（本地开发、测试）
-	if c.staticShortCircuits(serviceName) {
-		c.mu.RLock()
-		static := c.staticInstances[serviceName]
-		c.mu.RUnlock()
-		return copyInstances(static), nil
-	}
-
-	// 2. Mock 模式
-	if c.mockMode {
-		return c.getInstancesFromStaticOrCache(serviceName), nil
-	}
-
-	// 3. 新鲜缓存快路径（由 Subscribe 推送或上次 Discover 填充）
-	if cached := c.getInstancesFromCache(serviceName); cached != nil {
-		// 缓存里存着空列表（注册中心当时返回空）时同样走兜底——
-		// 否则「注册中心优先」的服务在第二次调用时会绕过兜底静态
-		return c.withStaticFallback(serviceName, cached), nil
-	}
-
-	// 4. 无 Discoverer（未注入或 provider 构造失败降级）且缓存已过期或为空
-	if c.discoverer == nil {
-		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
-			return fb, nil
-		}
-		return nil, fmt.Errorf("no discoverer available and no cached instances for [%s]", serviceName)
-	}
-
-	// 5. 从注册中心获取（singleflight 保护并发）
-	result, err := c.discoverSfg.Do(ctx, serviceName, func(ctx context.Context) ([]registry.Instance, error) {
-		// 获取 singleflight 后再次检查缓存：可能已有其他协程完成刷新
-		if cached := c.getInstancesFromCache(serviceName); cached != nil {
-			return cached, nil
-		}
-
-		rawInstances, derr := c.discoverer.Discover(ctx, serviceName)
-		if derr != nil {
-			return nil, derr
-		}
-
-		res := rawInstances
-		c.updateCache(serviceName, res)
-		// 返回拷贝：缓存已持有原始切片，直接返回会让 singleflight
-		// 的所有等待方共享（并可修改）缓存背后的数据
-		return copyInstances(res), nil
-	})
-	if err != nil {
-		// Discover 失败，降级使用缓存——即使已过期（stale）也比直接报错好，
-		// 这正是下方 godoc 第 5 条承诺的弹性语义
-		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
-			nnsLog.Warn("discover failed, falling back to stale cache", "service", serviceName, "err", err)
-			return cached, nil
-		}
-		// 6. 兜底静态实例（注册中心不可用且无缓存可用）
-		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
-			nnsLog.Warn("discover failed, falling back to static instances", "service", serviceName, "err", err)
-			return fb, nil
-		}
-		return nil, fmt.Errorf("discover instances [%s]: %w", serviceName, err)
-	}
-
-	// 6. 注册中心返回空列表 → 兜底静态实例
-	return c.withStaticFallback(serviceName, result), nil
+	return c.resolveInstances(ctx, serviceName, "discover",
+		func(ctx context.Context, name string) ([]registry.Instance, error) {
+			return c.discoverer.Discover(ctx, name)
+		}, true)
 }
 
 // GetAllInstances 获取指定服务的全部实例列表（包括不健康的实例）。
@@ -113,14 +68,39 @@ func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([
 //  5. 空结果兜底静态（同 GetInstances 第 6 级）
 //
 // 返回值契约与 GetInstances 一致：空列表 + nil error 表示「当前无可用实例，
-// 由调用方决定回落」。
+// 由调用方决定回落」；返回的也是**已发布只读快照**（见 GetInstances 的
+// 快照契约，#149）——DiscoverAll 的结果在 singleflight 出口做一次拷贝与
+// provider 内存解耦，并发等待方共享同一只读快照。
 func (c *ServiceClient) GetAllInstances(ctx context.Context, serviceName string) ([]registry.Instance, error) {
+	return c.resolveInstances(ctx, serviceName, "discover all",
+		func(ctx context.Context, name string) ([]registry.Instance, error) {
+			return c.discoverer.DiscoverAll(ctx, name)
+		}, false)
+}
+
+// resolveInstances 是 GetInstances / GetAllInstances 的公共实现（#141）：
+// 此前两条 6 级降级链整段双写，靠注释纪律对齐（#129）；现在优先级、降级
+// 与兜底收敛为单源，差异全部参数化：
+//
+//   - discover：Discover vs DiscoverAll 闭包；
+//   - cacheWrite：健康视图写实例缓存（并在 singleflight 内复查缓存），
+//     全量视图不写缓存也不读缓存快路径（仅在无 Discoverer 的降级态读）；
+//   - singleflight key：cacheWrite=false 时加 "all:" 前缀，与健康视图的
+//     flight 分开；
+//   - op：日志与错误包装里的动作名（"discover" / "discover all"）。
+func (c *ServiceClient) resolveInstances(
+	ctx context.Context,
+	serviceName string,
+	op string,
+	discover func(context.Context, string) ([]registry.Instance, error),
+	cacheWrite bool,
+) ([]registry.Instance, error) {
 	// 1. 短路语义的静态配置（本地开发、测试）
 	if c.staticShortCircuits(serviceName) {
 		c.mu.RLock()
 		static := c.staticInstances[serviceName]
 		c.mu.RUnlock()
-		return copyInstances(static), nil
+		return static, nil
 	}
 
 	// 2. Mock 模式
@@ -128,52 +108,79 @@ func (c *ServiceClient) GetAllInstances(ctx context.Context, serviceName string)
 		return c.getInstancesFromStaticOrCache(serviceName), nil
 	}
 
-	// 3. 无 Discoverer（未注入或 provider 构造失败降级）：与 GetInstances
-	// 同口径——新鲜缓存优先，兜底静态实例不被当短路返回
-	if c.discoverer == nil {
+	// 3. 新鲜缓存快路径（由 Subscribe 推送或上次 Discover 填充）：
+	//    健康视图（cacheWrite）恒可读——缓存里存着空列表（注册中心当时返回
+	//    空）时同样走兜底，否则「注册中心优先」的服务在第二次调用时会绕过
+	//    兜底静态；全量视图只在无 Discoverer 的降级态读缓存（有 Discoverer
+	//    时每次直通注册中心，缓存只存健康视图、不代全量）。
+	if cacheWrite || c.discoverer == nil {
 		if cached := c.getInstancesFromCache(serviceName); cached != nil {
 			return c.withStaticFallback(serviceName, cached), nil
 		}
+	}
+
+	// 4. 无 Discoverer（未注入或 provider 构造失败降级）且缓存已过期或为空
+	if c.discoverer == nil {
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
 			return fb, nil
 		}
 		return nil, fmt.Errorf("no discoverer available and no cached instances for [%s]", serviceName)
 	}
 
-	// 4. 从注册中心获取全部实例（singleflight 保护并发，避免缓存击穿）
-	result, err := c.discoverSfg.Do(ctx, "all:"+serviceName, func(ctx context.Context) ([]registry.Instance, error) {
-		rawInstances, derr := c.discoverer.DiscoverAll(ctx, serviceName)
-		if derr != nil {
-			return nil, fmt.Errorf("discover all instances [%s]: %w", serviceName, derr)
+	// 5. 从注册中心获取（singleflight 保护并发）
+	key := serviceName
+	if !cacheWrite {
+		key = "all:" + serviceName
+	}
+	result, err := c.discoverSfg.Do(ctx, key, func(ctx context.Context) ([]registry.Instance, error) {
+		// 获取 singleflight 后再次检查缓存：可能已有其他协程完成刷新
+		// （仅健康视图——全量视图不写缓存，无此复查语义）
+		if cacheWrite {
+			if cached := c.getInstancesFromCache(serviceName); cached != nil {
+				return cached, nil
+			}
 		}
-		return rawInstances, nil
+
+		rawInstances, derr := discover(ctx, serviceName)
+		if derr != nil {
+			return nil, fmt.Errorf("%s instances [%s]: %w", op, serviceName, derr)
+		}
+
+		if cacheWrite {
+			// 发布（内部一次深拷贝，与 provider 内存解耦）并返回同一只读快照
+			return c.updateCache(serviceName, rawInstances), nil
+		}
+		// 全量视图：出口一次拷贝与 provider 内存解耦，singleflight 等待方
+		// 共享同一只读快照
+		return copyInstances(rawInstances), nil
 	})
 	if err != nil {
-		// DiscoverAll 失败，降级使用缓存——即使已过期（stale）也比直接报错好，
-		// 与 GetInstances 第 5/6 级同口径
+		// 注册中心路径失败，降级使用缓存——即使已过期（stale）也比直接报错好，
+		// 这正是 godoc 第 5 条承诺的弹性语义
 		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
-			nnsLog.Warn("discover all failed, falling back to stale cache", "service", serviceName, logx.ErrKey, err)
+			nnsLog.Warn(op+" failed, falling back to stale cache", "service", serviceName, logx.ErrKey, err)
 			return cached, nil
 		}
+		// 6. 兜底静态实例（注册中心不可用且无缓存可用）
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
-			nnsLog.Warn("discover all failed, falling back to static instances", "service", serviceName, logx.ErrKey, err)
+			nnsLog.Warn(op+" failed, falling back to static instances", "service", serviceName, logx.ErrKey, err)
 			return fb, nil
 		}
 		return nil, err
 	}
 
-	// 5. 注册中心返回空列表 → 兜底静态实例（同 GetInstances 第 6 级）。
-	// 返回拷贝，避免 singleflight 等待方共享同一可变切片
-	return c.withStaticFallback(serviceName, copyInstances(result)), nil
+	// 6. 注册中心返回空列表 → 兜底静态实例
+	return c.withStaticFallback(serviceName, result), nil
 }
 
-// getInstancesFromStaticOrCache 从静态配置或缓存获取实例
+// getInstancesFromStaticOrCache 从静态配置或缓存获取实例（只读快照引用，
+// #149）。
 func (c *ServiceClient) getInstancesFromStaticOrCache(serviceName string) []registry.Instance {
 	c.mu.RLock()
 	instances, ok := c.staticInstances[serviceName]
 	c.mu.RUnlock()
 	if ok && len(instances) > 0 {
-		return copyInstances(instances)
+		return instances
 	}
 	return c.getInstancesFromCache(serviceName)
 }
@@ -190,6 +197,11 @@ func (c *ServiceClient) getStaleInstancesFromCache(serviceName string) []registr
 }
 
 // cacheLookup 读取实例缓存；ignoreExpiry=true 时跳过过期检查。
+//
+// 返回**已发布只读快照**的引用（#149）：缓存条目由 updateCache 在发布时
+// 一次深拷贝物化、此后整体替换、无人原地改写，读路径零拷贝——此前每读必
+// copyInstances（每请求分配新切片 + 每实例一个 Metadata map），是
+// nns-endpoint 每请求调 GetInstances 场景下的稳态分配源。
 func (c *ServiceClient) cacheLookup(serviceName string, ignoreExpiry bool) []registry.Instance {
 	c.cacheMu.RLock()
 	defer c.cacheMu.RUnlock()
@@ -208,7 +220,7 @@ func (c *ServiceClient) cacheLookup(serviceName string, ignoreExpiry bool) []reg
 		}
 	}
 
-	return copyInstances(instances)
+	return instances
 }
 
 // defaultStaticWeight 是静态实例的默认权重，与注册侧口径一致：
@@ -234,29 +246,32 @@ func normalizeStaticInstances(instances []registry.Instance) []registry.Instance
 	return result
 }
 
-// copyInstances 深拷贝实例列表（含 Metadata map），
-// 避免调用方修改污染内部缓存或静态配置。
+// copyInstances 深拷贝实例列表（含 Metadata map）。
+//
+// 仅在**发布边界**使用（#149）：缓存写入（与 provider 内存解耦）、静态表
+// 写入（与调用方入参解耦）、DiscoverAll 出口。读路径直接引用已发布快照，
+// 不再每读拷贝。
 func copyInstances(instances []registry.Instance) []registry.Instance {
-	result := make([]registry.Instance, len(instances))
-	copy(result, instances)
+	result := slices.Clone(instances)
 	for i := range result {
-		if result[i].Metadata != nil {
-			meta := make(map[string]string, len(result[i].Metadata))
-			for k, v := range result[i].Metadata {
-				meta[k] = v
-			}
-			result[i].Metadata = meta
-		}
+		result[i].Metadata = maps.Clone(result[i].Metadata)
 	}
 	return result
 }
 
-// updateCache 更新本地缓存
-func (c *ServiceClient) updateCache(serviceName string, instances []registry.Instance) {
+// updateCache 发布新的实例缓存快照并返回它。
+//
+// 发布时一次深拷贝（与 provider 推送 / Discover 结果的私有内存解耦——
+// 上游复用缓冲不再可能腐蚀缓存），整体替换旧条目（RCU，#149）：已发出的
+// 旧快照引用不受影响，读路径拿到的是不再被本包改写的只读数据。
+func (c *ServiceClient) updateCache(serviceName string, instances []registry.Instance) []registry.Instance {
+	snap := copyInstances(instances)
+
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()
 
-	c.instanceCache[serviceName] = instances
+	c.instanceCache[serviceName] = snap
 	c.cacheLastUpdate[serviceName] = time.Now()
-	nnsLog.Debug("cache updated", "service", serviceName, "count", len(instances))
+	nnsLog.Debug("cache updated", "service", serviceName, "count", len(snap))
+	return snap
 }
