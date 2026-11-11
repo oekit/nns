@@ -59,48 +59,67 @@ func (c *ServiceClient) BindServiceBasic(serviceName string, basic *metadata.Ser
 	}
 }
 
+// defaultBasicWithServiceName 构造带服务名维度的默认配置兜底值（#144）：
+// 服务全名可解析（5 段规范形）时填充 ServiceName 维度，否则返回纯默认值。
+// ServiceWithName 的两个静默降级分支（无 ConfigStore / 拉取失败）共用。
+func defaultBasicWithServiceName(serviceName string) metadata.ServiceBasic {
+	if serviceInfo := metadata.ParseServiceName(serviceName); serviceInfo != nil {
+		b := metadata.NewServiceBasic()
+		b.ServiceName = *serviceInfo
+		return *b
+	}
+	return *metadata.NewServiceBasic()
+}
+
+// localServiceConfigOrDefault 取构造期注入的本地服务配置（Mock 模式用）；
+// 未配置返回默认值。
+func (c *ServiceClient) localServiceConfigOrDefault(serviceName string) metadata.ServiceBasic {
+	if basic, ok := c.localServiceConfig[serviceName]; ok {
+		return *basic
+	}
+	return *metadata.NewServiceBasic()
+}
+
+// fetchServiceConfig 是 ServiceConfig / ServiceWithName 的共同主干（#144）：
+// GetConfig → JSON 解析 → BindServiceBasic 收口。错误按阶段包装后返回，
+// 由调用方按各自错误面处理（ServiceConfig 原样上抛 / ServiceWithName 静默
+// 降级）。仅限 configStore 非 nil 时调用。
+func (c *ServiceClient) fetchServiceConfig(ctx context.Context, serviceName string) (metadata.ServiceBasic, error) {
+	content, err := c.configStore.GetConfig(ctx, serviceName, c.configGroup)
+	if err != nil {
+		return metadata.ServiceBasic{}, fmt.Errorf("get service config [%s]: %w", serviceName, err)
+	}
+	basic := metadata.NewServiceBasic()
+	if content != "" {
+		if err := json.Unmarshal([]byte(content), basic); err != nil {
+			return metadata.ServiceBasic{}, fmt.Errorf("unmarshal service config [%s]: %w", serviceName, err)
+		}
+	}
+	c.BindServiceBasic(serviceName, basic)
+	return *basic, nil
+}
+
 // ServiceWithName 根据服务全名获取服务基本配置。
+//
+// 软依赖语义：配置拉取失败/JSON 解析失败时静默降级——日志 Warn 后返回
+// 默认超时值（硬失败面见 ServiceConfig）。主干与 ServiceConfig 共享
+// fetchServiceConfig（#144）。
 func (c *ServiceClient) ServiceWithName(ctx context.Context, serviceName string) metadata.ServiceBasic {
 	// Mock 模式或有本地配置
 	if c.mockMode {
-		if basic, ok := c.localServiceConfig[serviceName]; ok {
-			return *basic
-		}
-		return *metadata.NewServiceBasic()
+		return c.localServiceConfigOrDefault(serviceName)
 	}
-
-	basic := metadata.NewServiceBasic()
 
 	if c.configStore == nil {
-		serviceInfo := metadata.ParseServiceName(serviceName)
-		if serviceInfo != nil {
-			b := metadata.NewServiceBasic()
-			b.ServiceName = *serviceInfo
-			return *b
-		}
-		return *metadata.NewServiceBasic()
+		return defaultBasicWithServiceName(serviceName)
 	}
 
-	content, err := c.configStore.GetConfig(ctx, serviceName, c.configGroup)
+	basic, err := c.fetchServiceConfig(ctx, serviceName)
 	if err != nil {
-		nnsLog.Warn("get service config failed", "service", serviceName, "err", err)
-		serviceInfo := metadata.ParseServiceName(serviceName)
-		if serviceInfo != nil {
-			b := metadata.NewServiceBasic()
-			b.ServiceName = *serviceInfo
-			return *b
-		}
-		return *metadata.NewServiceBasic()
+		nnsLog.Warn("get service config failed, using default", "service", serviceName, "err", err)
+		return defaultBasicWithServiceName(serviceName)
 	}
-
-	if content != "" {
-		if err := json.Unmarshal([]byte(content), basic); err != nil {
-			nnsLog.Warn("unmarshal service config failed", "service", serviceName, "err", err)
-		}
-	}
-
-	c.BindServiceBasic(serviceName, basic)
-	return *basic
+	return basic
 }
 
 // ServiceConfig 拉取指定服务的配置并返回**真实错误**（#77）。
@@ -122,28 +141,17 @@ func (c *ServiceClient) ServiceWithName(ctx context.Context, serviceName string)
 //   - Mock 模式：取 localServiceConfig，未配置则默认值，不报错。
 func (c *ServiceClient) ServiceConfig(ctx context.Context, serviceName string) (metadata.ServiceBasic, error) {
 	if c.mockMode {
-		if basic, ok := c.localServiceConfig[serviceName]; ok {
-			return *basic, nil
-		}
-		return *metadata.NewServiceBasic(), nil
+		return c.localServiceConfigOrDefault(serviceName), nil
 	}
 	if c.configStore == nil {
 		return metadata.ServiceBasic{}, ErrConfigStoreUnavailable
 	}
 
-	content, err := c.configStore.GetConfig(ctx, serviceName, c.configGroup)
+	basic, err := c.fetchServiceConfig(ctx, serviceName)
 	if err != nil {
-		return metadata.ServiceBasic{}, fmt.Errorf("get service config [%s]: %w", serviceName, err)
+		return metadata.ServiceBasic{}, err
 	}
-
-	basic := metadata.NewServiceBasic()
-	if content != "" {
-		if err := json.Unmarshal([]byte(content), basic); err != nil {
-			return metadata.ServiceBasic{}, fmt.Errorf("unmarshal service config [%s]: %w", serviceName, err)
-		}
-	}
-	c.BindServiceBasic(serviceName, basic)
-	return *basic, nil
+	return basic, nil
 }
 
 // GetLocalService 获取本地服务的基本配置信息。
@@ -204,8 +212,11 @@ func (c *ServiceClient) GetLocalRegion() string {
 }
 
 // GetRegistrar 返回内部的 registrar 接口（供 nns/kitex 适配器使用）。
+//
+// Deprecated: 与 Registrar() 完全等价（#146 双访问器收敛）。新代码请用
+// Registrar()；kitex/hertz 适配层迁移完成前本转发保留，之后随 major 删除。
 func (c *ServiceClient) GetRegistrar() registry.Registrar {
-	return c.registrar
+	return c.Registrar()
 }
 
 // GetDepService 返回依赖服务配置的快照（并发安全）。
@@ -228,6 +239,71 @@ func (c *ServiceClient) GetDepService() map[string]*metadata.ServiceBasic {
 	return out
 }
 
+// fallbackMarkKind 描述写入口对 fallbackOnly 语义标记的动作（#143 收敛前
+// 由各入口各自维护，行为差异保留）。
+type fallbackMarkKind int
+
+const (
+	// fallbackKeep 不改语义标记：运行期短路写入口（Add/SetStaticInstance）
+	// ——已有兜底语义的服务被写入后仍是兜底（#128「语义标记跟随」）。
+	fallbackKeep fallbackMarkKind = iota
+	// fallbackMark 标记兜底语义（Add/SetStaticFallback、WithStaticFallback）。
+	fallbackMark
+	// fallbackClear 清除标记恢复短路语义（构造期 WithStaticInstances：
+	// 同一服务与 WithStaticFallback 重复配置时以最后一次调用为准）。
+	fallbackClear
+)
+
+// setStaticLocked 是全部静态实例写入口（With/Add/Set × 短路/兜底 × 追加/覆盖，
+// 共 6 处，#143）的锁内公共实现：归一化（normalizeStaticInstances，拷贝入参
+// 并回填默认权重）、写表、维护 fallbackOnly 语义标记。
+//
+// 调用方必须已持有 c.mu（写锁）。appendMode=true 在原条目后追加，false 覆盖。
+// 追加与覆盖都**发布全新切片**（不原地改写既有 backing array）——读路径
+// （#149）把静态表当作已发布只读快照直接引用，任何原地写入都会污染已
+// 发出的快照。
+func (c *ServiceClient) setStaticLocked(serviceName string, instances []registry.Instance, appendMode bool, mark fallbackMarkKind) {
+	if c.staticInstances == nil {
+		c.staticInstances = make(map[string][]registry.Instance)
+	}
+	normalized := normalizeStaticInstances(instances)
+	var next []registry.Instance
+	if appendMode {
+		prev := c.staticInstances[serviceName]
+		next = make([]registry.Instance, 0, len(prev)+len(normalized))
+		next = append(next, prev...)
+		next = append(next, normalized...)
+	} else {
+		next = normalized
+	}
+	c.staticInstances[serviceName] = next
+
+	switch mark {
+	case fallbackMark:
+		if c.fallbackOnly == nil {
+			c.fallbackOnly = make(map[string]bool)
+		}
+		c.fallbackOnly[serviceName] = true
+	case fallbackClear:
+		if c.fallbackOnly != nil {
+			delete(c.fallbackOnly, serviceName)
+		}
+	}
+}
+
+// warnStaticShortCircuitFlipLocked 在运行期写入口把服务从「查注册中心」切到
+// 「静态短路」时 Warn 点明后果（#128）：仅当此前不短路、现在短路时告警。
+// 调用方必须已持有 c.mu。
+func (c *ServiceClient) warnStaticShortCircuitFlipLocked(serviceName string, wasShort bool) {
+	if wasShort || !c.staticShortCircuitsLocked(serviceName) {
+		return
+	}
+	nnsLog.Warn("static instances now short-circuit registry discovery for this service; "+
+		"registry up/down, weight and health changes no longer apply — "+
+		"use AddStaticFallback/SetStaticFallback for backup addresses, or SetStaticInstances(nil) to restore",
+		"service", serviceName)
+}
+
 // AddStaticInstance 添加静态服务实例（**短路**语义，与 WithStaticInstances
 // 一致）。
 //
@@ -244,14 +320,9 @@ func (c *ServiceClient) AddStaticInstance(serviceName string, instances ...regis
 	defer c.mu.Unlock()
 
 	wasShort := c.staticShortCircuitsLocked(serviceName)
-	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], normalizeStaticInstances(instances)...)
+	c.setStaticLocked(serviceName, instances, true, fallbackKeep)
 	nnsLog.Info("added static instances", "service", serviceName, "count", len(instances))
-	if !wasShort && c.staticShortCircuitsLocked(serviceName) {
-		nnsLog.Warn("static instances now short-circuit registry discovery for this service; "+
-			"registry up/down, weight and health changes no longer apply — "+
-			"use AddStaticFallback/SetStaticFallback for backup addresses, or SetStaticInstances(nil) to restore",
-			"service", serviceName)
-	}
+	c.warnStaticShortCircuitFlipLocked(serviceName, wasShort)
 }
 
 // SetStaticInstances 设置静态服务实例（覆盖，**短路**语义，与
@@ -267,14 +338,9 @@ func (c *ServiceClient) SetStaticInstances(serviceName string, instances []regis
 	defer c.mu.Unlock()
 
 	wasShort := c.staticShortCircuitsLocked(serviceName)
-	c.staticInstances[serviceName] = normalizeStaticInstances(instances)
+	c.setStaticLocked(serviceName, instances, false, fallbackKeep)
 	nnsLog.Info("set static instances", "service", serviceName, "count", len(instances))
-	if !wasShort && c.staticShortCircuitsLocked(serviceName) {
-		nnsLog.Warn("static instances now short-circuit registry discovery for this service; "+
-			"registry up/down, weight and health changes no longer apply — "+
-			"use AddStaticFallback/SetStaticFallback for backup addresses, or SetStaticInstances(nil) to restore",
-			"service", serviceName)
-	}
+	c.warnStaticShortCircuitFlipLocked(serviceName, wasShort)
 }
 
 // AddStaticFallback 追加**兜底**静态实例（与 WithStaticFallback 一致的语义）。
@@ -289,14 +355,7 @@ func (c *ServiceClient) AddStaticFallback(serviceName string, instances ...regis
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.staticInstances == nil {
-		c.staticInstances = make(map[string][]registry.Instance)
-	}
-	c.staticInstances[serviceName] = append(c.staticInstances[serviceName], normalizeStaticInstances(instances)...)
-	if c.fallbackOnly == nil {
-		c.fallbackOnly = make(map[string]bool)
-	}
-	c.fallbackOnly[serviceName] = true
+	c.setStaticLocked(serviceName, instances, true, fallbackMark)
 	nnsLog.Info("added static fallback instances (registry discovery preserved)",
 		"service", serviceName, "count", len(instances))
 }
@@ -310,14 +369,7 @@ func (c *ServiceClient) SetStaticFallback(serviceName string, instances []regist
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.staticInstances == nil {
-		c.staticInstances = make(map[string][]registry.Instance)
-	}
-	c.staticInstances[serviceName] = normalizeStaticInstances(instances)
-	if c.fallbackOnly == nil {
-		c.fallbackOnly = make(map[string]bool)
-	}
-	c.fallbackOnly[serviceName] = true
+	c.setStaticLocked(serviceName, instances, false, fallbackMark)
 	nnsLog.Info("set static fallback instances (registry discovery preserved)",
 		"service", serviceName, "count", len(instances))
 }

@@ -53,6 +53,24 @@ func WithMockMode(enabled bool) NNSOption {
 	return func(o *clientOptions) { o.mockMode = enabled }
 }
 
+// addStaticOpt 是门面静态实例 option（WithStaticInstance / WithStaticFallback）
+// 的公共 map 组装（#143）：fallbackOnly 差异参数化。权重归一化在 client 层
+// 写入口统一做（本层只是翻译暂存）。
+func addStaticOpt(o *clientOptions, serviceName string, instances []registry.Instance, fallback bool) {
+	if o.staticInstances == nil {
+		o.staticInstances = make(map[string][]registry.Instance)
+	}
+	o.staticInstances[serviceName] = instances
+	if fallback {
+		if o.staticFallbackOnly == nil {
+			o.staticFallbackOnly = make(map[string]bool)
+		}
+		o.staticFallbackOnly[serviceName] = true
+	} else if o.staticFallbackOnly != nil {
+		delete(o.staticFallbackOnly, serviceName)
+	}
+}
+
 // WithStaticInstance 配置指定服务的静态实例列表，用于本地开发或特殊场景。
 //
 // 默认是**短路**语义：配了该服务的静态实例后，GetInstances 直接返回它们，
@@ -63,15 +81,7 @@ func WithMockMode(enabled bool) NNSOption {
 // （对齐 registry.Apply / registry.InfoFrom 的 defaultWeight），避免零权重
 // 被下游加权均衡整只跳过变成「无可用实例」；显式正权重原样保留。
 func WithStaticInstance(serviceName string, instances []registry.Instance) NNSOption {
-	return func(o *clientOptions) {
-		if o.staticInstances == nil {
-			o.staticInstances = make(map[string][]registry.Instance)
-		}
-		o.staticInstances[serviceName] = instances
-		if o.staticFallbackOnly != nil {
-			delete(o.staticFallbackOnly, serviceName)
-		}
-	}
+	return func(o *clientOptions) { addStaticOpt(o, serviceName, instances, false) }
 }
 
 // WithStaticFallback 配置指定服务的**兜底**静态实例。
@@ -90,16 +100,7 @@ func WithStaticInstance(serviceName string, instances []registry.Instance) NNSOp
 //
 // 权重与 WithStaticInstance 同口径：Weight<=0 回填默认权重 10。
 func WithStaticFallback(serviceName string, instances []registry.Instance) NNSOption {
-	return func(o *clientOptions) {
-		if o.staticInstances == nil {
-			o.staticInstances = make(map[string][]registry.Instance)
-		}
-		o.staticInstances[serviceName] = instances
-		if o.staticFallbackOnly == nil {
-			o.staticFallbackOnly = make(map[string]bool)
-		}
-		o.staticFallbackOnly[serviceName] = true
-	}
+	return func(o *clientOptions) { addStaticOpt(o, serviceName, instances, true) }
 }
 
 // WithFallbackOrder 设置全局降级序：静态实例与注册中心谁优先。

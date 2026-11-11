@@ -71,14 +71,12 @@ func WithFallbackOrder(order FallbackOrder) ClientOption {
 // 显式正权重原样保留——见 normalizeStaticInstances。
 func WithStaticFallback(serviceName string, instances []registry.Instance) ClientOption {
 	return func(c *ServiceClient) {
-		if c.staticInstances == nil {
-			c.staticInstances = make(map[string][]registry.Instance)
-		}
-		c.staticInstances[serviceName] = normalizeStaticInstances(instances)
-		if c.fallbackOnly == nil {
-			c.fallbackOnly = make(map[string]bool)
-		}
-		c.fallbackOnly[serviceName] = true
+		// 与运行期写入口共用锁内实现（#143）：归一化 + 标记兜底语义 +
+		// 发布全新切片（#149 读路径直接引用已发布快照）。构造期单线程，
+		// 加锁仅为复用同一实现。
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.setStaticLocked(serviceName, instances, false, fallbackMark)
 	}
 }
 
@@ -107,6 +105,9 @@ func (c *ServiceClient) staticShortCircuitsLocked(serviceName string) bool {
 //
 // 兜底来源有两种：显式标记为兜底语义的服务（WithStaticFallback），
 // 以及全局序为注册中心优先时的普通静态实例。
+//
+// 返回**已发布只读快照**的引用（#149）：静态表写入口（setStaticLocked）
+// 发布全新切片、不原地改写，快照内容恒定。
 func (c *ServiceClient) staticFallbackPool(serviceName string) []registry.Instance {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -114,7 +115,7 @@ func (c *ServiceClient) staticFallbackPool(serviceName string) []registry.Instan
 		return nil
 	}
 	if c.fallbackOnly[serviceName] || c.fallbackOrder == FallbackRegistryFirst {
-		return copyInstances(c.staticInstances[serviceName])
+		return c.staticInstances[serviceName]
 	}
 	return nil
 }
