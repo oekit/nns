@@ -176,12 +176,12 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 			// 触发配置变更回调：分发时现读回调列表（而非注册时快照），
 			// 保证 WatchService 之后注册的回调同样收到事件
 			c.mu.RLock()
-			callbacks := make([]func(string), len(c.configChangeCallbacks))
+			callbacks := make([]*ConfigChangeHandle, len(c.configChangeCallbacks))
 			copy(callbacks, c.configChangeCallbacks)
 			c.mu.RUnlock()
 
-			for _, fn := range callbacks {
-				safeInvoke("config", serviceName, func() { fn(serviceName) })
+			for _, cb := range callbacks {
+				safeInvoke("config", serviceName, func() { cb.fn(serviceName) })
 			}
 		})
 		if err != nil {
@@ -219,12 +219,34 @@ func safeInvoke(kind, serviceName string, fn func()) {
 	fn()
 }
 
-// OnConfigChange 注册配置变更回调。
+// OnConfigChange 注册配置变更回调，返回注销句柄。
 // 当 WatchService 检测到服务配置变更时，所有已注册的回调会被触发；
 // 回调列表在事件分发时现读，注册顺序不影响事件送达。
 // 典型用途：endpoint factory 注册 balancer 缓存重置。
-func (c *ServiceClient) OnConfigChange(fn func(serviceName string)) {
+//
+// 保存返回的句柄并在组件 Close 时传给 OffConfigChange 注销——长生命周期的
+// ServiceClient 会经回调闭包持有注册方，注册方废弃后不注销则无法回收，
+// 配置事件也会继续打在死组件上（oekit/nns-endpoint#135）。
+func (c *ServiceClient) OnConfigChange(fn func(serviceName string)) *ConfigChangeHandle {
+	entry := &ConfigChangeHandle{fn: fn}
 	c.mu.Lock()
-	c.configChangeCallbacks = append(c.configChangeCallbacks, fn)
+	c.configChangeCallbacks = append(c.configChangeCallbacks, entry)
 	c.mu.Unlock()
+	return entry
+}
+
+// OffConfigChange 按 OnConfigChange 返回的句柄注销对应回调。
+// 幂等：nil 句柄、重复注销或句柄已随 Close 清空均为 no-op。
+func (c *ServiceClient) OffConfigChange(handle *ConfigChangeHandle) {
+	if handle == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, cb := range c.configChangeCallbacks {
+		if cb == handle {
+			c.configChangeCallbacks = append(c.configChangeCallbacks[:i], c.configChangeCallbacks[i+1:]...)
+			return
+		}
+	}
 }

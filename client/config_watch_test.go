@@ -187,3 +187,79 @@ func TestSubscribeService_CallbackPanicIsolated(t *testing.T) {
 		t.Fatal("callback after a panicking callback was not invoked")
 	}
 }
+
+// TestOffConfigChange_RemovesCallback 回归测试（nns-endpoint#135 对侧）：
+// OffConfigChange 按注册句柄精确摘除单个回调，其余回调不受影响；
+// 摘除后配置事件不再送达被注销的回调。
+func TestOffConfigChange_RemovesCallback(t *testing.T) {
+	store := registrymocks.NewConfigStore()
+	c := newTestClient(t, WithConfigStore(store))
+
+	c.WatchService(context.Background(), "svc-a")
+	waitListening(t, store, "svc-a", "DEFAULT_GROUP")
+
+	var kept, removed atomic.Int32
+	h1 := c.OnConfigChange(func(string) { kept.Add(1) })
+	h2 := c.OnConfigChange(func(string) { removed.Add(1) })
+
+	c.OffConfigChange(h2)
+	store.FireChange("svc-a", "DEFAULT_GROUP", "")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && kept.Load() == 0 {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if kept.Load() == 0 {
+		t.Fatal("surviving callback did not receive the config change event")
+	}
+	// 给可能误触发的分发留出窗口，再断言被注销回调零送达
+	time.Sleep(50 * time.Millisecond)
+	if got := removed.Load(); got != 0 {
+		t.Fatalf("removed callback received %d events after OffConfigChange", got)
+	}
+	_ = h1
+}
+
+// TestOffConfigChange_Idempotent 钉住注销幂等边界：nil 句柄、重复注销、
+// 摘除后句柄再注销均为 no-op，不 panic、不影响其余回调。
+func TestOffConfigChange_Idempotent(t *testing.T) {
+	store := registrymocks.NewConfigStore()
+	c := newTestClient(t, WithConfigStore(store))
+
+	c.OffConfigChange(nil) // nil 句柄 no-op
+
+	handle := c.OnConfigChange(func(string) {})
+
+	c.OffConfigChange(handle)
+	c.OffConfigChange(handle) // 重复注销 no-op
+
+	c.mu.RLock()
+	count := len(c.configChangeCallbacks)
+	c.mu.RUnlock()
+	if count != 0 {
+		t.Fatalf("expected callback list empty after unregister, got %d", count)
+	}
+}
+
+// TestOnConfigChange_ReturnsDistinctHandles 钉住句柄唯一性：同一回调函数
+// 注册两次得到两个独立句柄，注销其一不影响另一注册（按句柄而非函数身份
+// 摘除——Go 函数值不可比较，同一闭包字面量的两次构造无法按函数区分）。
+func TestOnConfigChange_ReturnsDistinctHandles(t *testing.T) {
+	c := newTestClient(t)
+
+	var total atomic.Int32
+	fn := func(string) { total.Add(1) }
+	h1 := c.OnConfigChange(fn)
+	h2 := c.OnConfigChange(fn)
+	if h1 == h2 {
+		t.Fatal("expected distinct handles for two registrations")
+	}
+
+	c.OffConfigChange(h1)
+	c.mu.RLock()
+	count := len(c.configChangeCallbacks)
+	c.mu.RUnlock()
+	if count != 1 {
+		t.Fatalf("expected 1 callback after unregistering one of two, got %d", count)
+	}
+}
