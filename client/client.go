@@ -55,8 +55,11 @@ type ServiceClient struct {
 
 	// 已监听的服务集合（WatchService 去重）
 	watchedServices map[string]bool
-	// 配置变更回调（endpoint factory 注册 balancer 重置）
-	configChangeCallbacks []func(serviceName string)
+	// 配置变更回调（endpoint factory 注册 balancer 重置）。
+	// 存指针包装条目（ConfigChangeHandle）：Go 函数值不可比较，指针可按
+	// 身份摘除——OffConfigChange 按注册句柄精确注销单个回调，
+	// 与 instanceCallbacks 的指针包装口径一致。
+	configChangeCallbacks []*ConfigChangeHandle
 
 	// configGroup 是配置读取的分组（provider 无关的字符串，
 	// 由门面从 provider 配置翻译注入，见 WithConfigGroup）
@@ -227,6 +230,19 @@ func (c *ServiceClient) setSelfServiceNameIfEmpty(name string) {
 // 解决 Go 函数值不可比较导致的"整体快照回滚"在并发订阅下互相抹除的问题。
 type instanceCallback struct {
 	fn func([]registry.Instance)
+}
+
+// ConfigChangeHandle 是 OnConfigChange 注册配置变更回调的注销句柄。
+//
+// Go 函数值不可比较，无法按函数身份摘除——注册条目以指针包装存储，
+// 调用方保存 OnConfigChange 返回的句柄、传给 OffConfigChange 即可精确
+// 注销该次注册（与 instanceCallback 的指针包装同一口径）。零值句柄与
+// 重复注销均为 no-op。
+//
+// 典型生命周期：组件（如 endpoint factory）构造时注册、Close 时注销——
+// 否则长生命周期的 ServiceClient 会经回调闭包持续持有已废弃的组件。
+type ConfigChangeHandle struct {
+	fn func(serviceName string)
 }
 
 // subscribeCall 是一次「向 provider 注册 SDK 监听」的进行中状态。
