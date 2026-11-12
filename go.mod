@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/oekit/concurrency v0.34.1
-	github.com/oekit/core v0.15.0
+	github.com/oekit/core v0.15.1
 	github.com/oekit/logx v0.10.0
 	github.com/oekit/registry v0.5.15
 	github.com/oekit/registry/nacos v0.1.14
