@@ -1,3 +1,7 @@
+## [v0.8.1] — 2026-11-13
+
+- 7 单修复批（L9 车道 #171）：Discoverer stale 缓存跳过（#150）、Close 等在途 Subscribe（#152）、Deregister 空名校验（#153）、GetLocalService 浅拷贝（#154）、metadata.Endpoint 孤儿（#156）、扇出锁外遍历 COW（#165）、singleflight 快照契约（#151）；地板对齐 pkg v0.47.0。
+
 ## [v0.8.0] — 2026-11-12
 
 - feat(client): OnConfigChange 返回注销句柄 + 新增 OffConfigChange 注销口（#157，oekit/nns-endpoint#135 对侧）——configChangeCallbacks 改存 ConfigChangeHandle 指针包装条目（与 instanceCallbacks 同口径：Go 函数值不可比较、指针可按身份摘除），OnConfigChange 返回句柄，OffConfigChange 按句柄精确注销（nil/重复注销/条目已随 Close 清空均幂等 no-op），事件分发循环适配指针条目、「分发时现读回调列表」语义不变。长生命周期 ServiceClient 不再经回调闭包长持已废弃的 endpoint factory。**BREAKING CHANGE**：OnConfigChange 签名新增返回值 *ConfigChangeHandle——语句式调用完全兼容；把 OnConfigChange 用作函数值再调用的代码需适配（全矩阵无此用法，0.x minor 允许）。
