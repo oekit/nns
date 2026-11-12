@@ -131,13 +131,6 @@ type ElasticsearchAuth struct {
 // Route 服务路由规则定义。
 type Route []map[string]map[string]string
 
-// Endpoint 服务端点信息，包含地址、端口和元数据。
-type Endpoint struct {
-	Addr string            `json:"addr"`
-	Port int               `json:"port"`
-	Meta map[string]string `json:"meta"`
-}
-
 // NewServiceBasic 创建带有默认值的 ServiceBasic 实例。
 func NewServiceBasic() *ServiceBasic {
 	return &ServiceBasic{
@@ -160,3 +153,9 @@ func NewServiceBasic() *ServiceBasic {
 //     serviceName 两参数从不参与匹配（假维度签名）。
 //
 // 导出面删除按 minor + BREAKING 声明发版（0.x 阶段 minor 允许 breaking）。
+//
+// #156（同战役追加）删除第四个零引用导出成员：Endpoint（Addr/Port/Meta
+// 三字段）——GetEndpoints 删除后全工作区零引用（含 kitex/hertz/nns-endpoint/
+// httpx/middleware 消费仓 grep 复核，2026-11-12），仅本包 TestEndpoint_JSON
+// 自测自引，随类型一并删除。ServiceBasic.Endpoints 字段本身保留（JSON
+// 配置面不变，#139 已声明）。

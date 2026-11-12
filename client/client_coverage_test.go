@@ -148,6 +148,22 @@ func TestGetLocalService(t *testing.T) {
 	if got.ServiceName.FullName != "my-svc" {
 		t.Errorf("expected 'my-svc', got %q", got.ServiceName.FullName)
 	}
+
+	// #154：返回的是浅拷贝快照——写返回值不得影响内部状态与后续读取
+	// （此前导出内部活指针，调用方写字段会与并发 GetServiceBasic 的解引用
+	// 构成无锁数据竞争）。
+	got.ConnTimeout = 999999
+	again := c.GetLocalService()
+	if again == nil {
+		t.Fatal("expected non-nil on second read")
+	}
+	if again.ConnTimeout != 1000 {
+		t.Errorf("#154 regression: GetLocalService must return a snapshot copy; "+
+			"mutation leaked into internal state (ConnTimeout = %d, want default 1000)", again.ConnTimeout)
+	}
+	if basic := c.GetServiceBasic("my-svc"); basic.ConnTimeout != 1000 {
+		t.Errorf("#154 regression: mutation via GetLocalService leaked into GetServiceBasic view (got %d)", basic.ConnTimeout)
+	}
 }
 
 // TestGetLocalColor covers the 0%-coverage GetLocalColor accessor.

@@ -104,8 +104,17 @@ func (c *ServiceClient) logRegisterNoOp(port int) {
 // 时退回旧行为：按当下环境与 opts 现算实例身份——此时调用方必须保证
 // IP/Group/Cluster 与注册时完全一致。注销成功后缓存清除，再次 Deregister
 // 走现算路径。
+//
+// 服务名为空（未先 Init/LocalServiceInit 记录自身服务名）时返回
+// ErrServiceNameRequired（#153，与 DeregisterAs 同序：参数校验先于环境
+// 检查）——此前空名会以 Service="" 现算实例直接打给 provider，调用方
+// 拿到的只是 provider 侧的晦涩错误，收不到「没先 Init」的根因信号。
 func (c *ServiceClient) Deregister(ctx context.Context, port int, opts ...registry.RegisterOptionFunc) error {
-	return c.deregisterAs(ctx, c.getSelfServiceName(), port, opts...)
+	name := c.getSelfServiceName()
+	if name == "" {
+		return ErrServiceNameRequired
+	}
+	return c.deregisterAs(ctx, name, port, opts...)
 }
 
 // DeregisterAs 从注册中心注销指定服务名下的当前服务实例。

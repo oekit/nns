@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"fmt"
+	"slices"
 
+	"github.com/oekit/logx"
 	"github.com/oekit/registry"
 )
 
@@ -32,7 +34,11 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 	// 追加指针包装条目：Subscribe 失败时只按指针身份摘除自身——
 	// 整体快照回滚在并发订阅同一服务时会把他方已成功注册的回调一并抹掉
 	entry := &instanceCallback{fn: callback}
-	c.instanceCallbacks[serviceName] = append(c.instanceCallbacks[serviceName], entry)
+	// #165：扇出列表是 copy-on-write——追加也发布**全新切片**（full-slice
+	// 表达式强制 append 重分配 backing array），已发布切片永不再被原地
+	// 改写；推送扇出（newDispatch）在锁外遍历旧快照因此无数据竞争。
+	old := c.instanceCallbacks[serviceName]
+	c.instanceCallbacks[serviceName] = append(old[:len(old):len(old)], entry)
 	c.callbackMu.Unlock()
 
 	// Mock 模式或无订阅器时，使用静态配置或缓存
@@ -80,6 +86,16 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string, entry *instanceCallback) (bool, error) {
 	for {
 		c.callbackMu.Lock()
+		// #152：Close 是终结操作——关闭后不再向 provider 发起新注册（否则
+		// 监听注册落在 Close 的 Unsubscribe 之后 ⇒ 永久残留）。与
+		// SubscribeService 入口的 closed 检查对称：入口检查挡住「关闭后
+		// 才发起」的调用，这里挡住「发起时未关闭、等待/重入期间 Close
+		// 已完成」的调用（等待在途注册/退订醒来的循环每轮都复查）。
+		if c.closed.Load() {
+			c.callbackMu.Unlock()
+			c.rollbackEntry(serviceName, entry)
+			return false, ErrClientClosed
+		}
 		// 监听已注册 ⇒ 走去重路径（复用，不重复注册）。
 		if c.subscribedServices[serviceName] {
 			c.callbackMu.Unlock()
@@ -137,17 +153,35 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 
 		// 公布结果：**先在锁内改状态，再唤醒等待者**——等待者醒来后要能看到
 		// 最终状态（已注册 / 未注册）才能正确决策；顺序反了它会读到中间态。
+		compensate := false
 		c.callbackMu.Lock()
 		delete(c.subscribing, serviceName)
 		if err != nil {
 			// 回滚：只摘除本次注册的条目（并发订阅方不受影响），
 			// 并把服务标记留在「未注册」⇒ 等待者接手重试。
 			c.rollbackEntryLocked(serviceName, entry)
+		} else if c.closed.Load() {
+			// #152：注册期间 Close 已跑完全部清理——这次 Subscribe 落在了
+			// Close 的 Unsubscribe 之后（或 Close 的等待预算已耗尽），provider
+			// 侧监听无人再注销 ⇒ 立即补偿注销；且不得复写 subscribedServices
+			// （Close 已清空，重新置位会让已关闭的客户端被标回「已订阅」）。
+			// 对齐 WatchService 注册成功后的 closed 复查补偿（config.go）。
+			compensate = true
 		} else {
 			c.subscribedServices[serviceName] = true
 		}
 		c.callbackMu.Unlock()
 		close(call.done)
+
+		if compensate {
+			// 有界预算：Close 是终结操作，补偿注销不得无限期挂住
+			// （provider 不响应时与 closeDefaultTimeout 同口径）。
+			compensateCtx, cancel := context.WithTimeout(context.Background(), closeDefaultTimeout)
+			if uerr := c.subscriber.Unsubscribe(compensateCtx, serviceName); uerr != nil {
+				nnsLog.Warn("compensating unsubscribe after close failed", "service", serviceName, logx.ErrKey, uerr)
+			}
+			cancel()
+		}
 
 		if err != nil {
 			return false, fmt.Errorf("subscribe service [%s]: %w", serviceName, err)
@@ -165,11 +199,15 @@ func (c *ServiceClient) rollbackEntry(serviceName string, entry *instanceCallbac
 
 // rollbackEntryLocked 是 rollbackEntry 的锁内版本（调用方必须已持有
 // callbackMu 写锁）。
+//
+// #165：摘除是 copy-on-write——不原地搬移（append(list[:i], list[i+1:]...)
+// 会写共享 backing array，与锁外遍历旧快照的推送扇出构成数据竞争），
+// 发布全新切片；锁外已取到旧快照的扇出方读旧数组（只读），天然无竞争。
 func (c *ServiceClient) rollbackEntryLocked(serviceName string, entry *instanceCallback) {
 	list := c.instanceCallbacks[serviceName]
 	for i, e := range list {
 		if e == entry {
-			c.instanceCallbacks[serviceName] = append(list[:i], list[i+1:]...)
+			c.instanceCallbacks[serviceName] = slices.Concat(list[:i], list[i+1:])
 			break
 		}
 	}
@@ -191,6 +229,9 @@ func (c *ServiceClient) newDispatch(serviceName string) func([]registry.Instance
 		dispatch := copyInstances(instances)
 
 		c.callbackMu.RLock()
+		// #165：扇出列表是 copy-on-write（追加/回滚都发布全新切片，见
+		// SubscribeService / rollbackEntryLocked）——这里取到的切片头指向
+		// 的 backing array 在发布后永不再被写，放锁后遍历旧快照无数据竞争。
 		callbacks := c.instanceCallbacks[serviceName]
 		c.callbackMu.RUnlock()
 

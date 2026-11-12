@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
 	"github.com/oekit/registry"
 )
@@ -116,7 +117,7 @@ func (c *ServiceClient) ServiceWithName(ctx context.Context, serviceName string)
 
 	basic, err := c.fetchServiceConfig(ctx, serviceName)
 	if err != nil {
-		nnsLog.Warn("get service config failed, using default", "service", serviceName, "err", err)
+		nnsLog.Warn("get service config failed, using default", "service", serviceName, logx.ErrKey, err)
 		return defaultBasicWithServiceName(serviceName)
 	}
 	return basic
@@ -155,10 +156,21 @@ func (c *ServiceClient) ServiceConfig(ctx context.Context, serviceName string) (
 }
 
 // GetLocalService 获取本地服务的基本配置信息。
+//
+// 返回内部状态的**浅拷贝快照**（#154）：此前直接导出内部 *ServiceBasic
+// 活指针，WatchService 热更回调会整体替换/改写该对象（config.go），调用方
+// 经返回指针写字段（如改 ConnTimeout）会与并发 GetServiceBasic 的解引用
+// 构成无锁数据竞争（别名写穿面）。快照口径与 GetServiceBasic / GetDepService
+// 统一：结构体浅拷贝——嵌套的指针/map 字段（如 TimeoutRetryCfg）与内部
+// 状态共享，调用方不得修改。未 Init 时返回 nil（既有行为不变）。
 func (c *ServiceClient) GetLocalService() *metadata.ServiceBasic {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.localService
+	if c.localService == nil {
+		return nil
+	}
+	basic := *c.localService
+	return &basic
 }
 
 // GetServiceBasic 返回指定服务的内存配置（不发起网络请求）。
