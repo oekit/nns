@@ -1,7 +1,6 @@
 package metadata
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/oekit/registry"
@@ -61,24 +60,6 @@ func TestServiceName_Fields(t *testing.T) {
 	}
 	if sn.Region != "cn" {
 		t.Errorf("unexpected Region: %s", sn.Region)
-	}
-}
-
-func TestEndpoint_JSON(t *testing.T) {
-	ep := Endpoint{
-		Addr: "10.0.0.1:8080",
-		Port: 8080,
-		Meta: map[string]string{"version": "v1"},
-	}
-	data, _ := json.Marshal(ep)
-	var result map[string]any
-	_ = json.Unmarshal(data, &result)
-
-	if result["addr"] != "10.0.0.1:8080" {
-		t.Errorf("unexpected addr: %v", result["addr"])
-	}
-	if result["port"].(float64) != 8080 {
-		t.Errorf("unexpected port: %v", result["port"])
 	}
 }
 

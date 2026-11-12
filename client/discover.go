@@ -18,8 +18,10 @@ import (
 //     与 WithStaticFallback 的区别）；兜底语义下静态实例不在此步参与
 //  2. Mock 模式（静态或缓存）
 //  3. 新鲜缓存（由 Subscribe 推送或上一次 Discover 填充，在 cacheExpiry 内）
-//  4. 注册中心 Discover（singleflight 保护，避免缓存击穿）
-//  5. Discover 失败时降级使用缓存（含已过期条目）
+//  4. 注册中心 Discover（singleflight 保护，避免缓存击穿）；无 Discoverer
+//     （未注入或 provider 构造失败降级）时跳过本步
+//  5. 注册中心不可用降级（Discover 失败，或无 Discoverer，#150——两种
+//     形态同一口径）：stale 缓存（含已过期条目）
 //  6. 兜底静态实例（WithStaticFallback / FallbackRegistryFirst）——仅在
 //     注册中心路径拿不到实例时参与
 //
@@ -62,7 +64,8 @@ func (c *ServiceClient) GetInstances(ctx context.Context, serviceName string) ([
 // 优先序（与 GetInstances 逐级对齐）：
 //  1. 短路语义的静态配置（同 GetInstances 第 1 级）
 //  2. Mock 模式（同 GetInstances 第 2 级）
-//  3. 无 Discoverer：新鲜缓存 → 兜底静态 → 报错（同 GetInstances 第 3/4 级）
+//  3. 无 Discoverer：新鲜缓存 → stale 缓存 → 兜底静态 → 报错
+//     （同 GetInstances 第 3/5/6 级，#150 stale 降级对齐）
 //  4. DiscoverAll（singleflight 保护，"all:" 前缀与 GetInstances 的
 //     flight 分开；失败降级 stale 缓存 → 兜底静态 → 报错，同第 5/6 级）
 //  5. 空结果兜底静态（同 GetInstances 第 6 级）
@@ -119,12 +122,22 @@ func (c *ServiceClient) resolveInstances(
 		}
 	}
 
-	// 4. 无 Discoverer（未注入或 provider 构造失败降级）且缓存已过期或为空
+	// 4. 无 Discoverer（未注入或 provider 构造失败降级）且新鲜缓存未命中：
+	//    与「Discover 失败」（第 5/6 级）同属注册中心不可用，降级口径
+	//    一致（#150）：stale 缓存 → 兜底静态 → 报错。此前这个分支跳过
+	//    stale 缓存直接硬报错，且错误文案断言「no cached instances」——
+	//    与事实相反（缓存里确实有实例，只是已过期）：subscriber-only
+	//    客户端（Subscribe 推送填缓存、不需要 Discoverer，client/doc.go
+	//    明确支持的注入形态）缓存一过期即撞上这条硬报错。
 	if c.discoverer == nil {
+		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
+			nnsLog.Warn("no discoverer available, falling back to stale cache", "service", serviceName)
+			return cached, nil
+		}
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
 			return fb, nil
 		}
-		return nil, fmt.Errorf("no discoverer available and no cached instances for [%s]", serviceName)
+		return nil, fmt.Errorf("no discoverer available and no cached or fallback instances for [%s]", serviceName)
 	}
 
 	// 5. 从注册中心获取（singleflight 保护并发）

@@ -187,22 +187,22 @@ func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) ([]client.ClientOption, []func()) {
 	namingClient, err := nacos.NewNamingClient(cfg)
 	if err != nil {
-		nnsLog.Warn("create naming client failed, will use cache/static instances", "err", err)
+		nnsLog.Warn("create naming client failed, will use cache/static instances", logx.ErrKey, err)
 		return clientOpts, nil
 	}
 
 	if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(cfg.Group)); e != nil {
-		nnsLog.Warn("create discoverer failed, degrading to cache/static", "err", e)
+		nnsLog.Warn("create discoverer failed, degrading to cache/static", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithDiscoverer(d))
 	}
 	if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(cfg.Group)); e != nil {
-		nnsLog.Warn("create subscriber failed, degrading", "err", e)
+		nnsLog.Warn("create subscriber failed, degrading", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithSubscriber(s))
 	}
 	if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(cfg.Group)); e != nil {
-		nnsLog.Warn("create registrar failed, degrading", "err", e)
+		nnsLog.Warn("create registrar failed, degrading", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithRegistrar(r))
 	}
@@ -212,11 +212,11 @@ func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) 
 
 	configClient, err := nacos.NewConfigClient(cfg)
 	if err != nil {
-		nnsLog.Warn("create config client failed, will use local config", "err", err)
+		nnsLog.Warn("create config client failed, will use local config", logx.ErrKey, err)
 		return clientOpts, closers
 	}
 	if cs, e := nacosimpl.NewConfigStore(configClient); e != nil {
-		nnsLog.Warn("create config store failed, degrading to local config", "err", e)
+		nnsLog.Warn("create config store failed, degrading to local config", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithConfigStore(cs))
 	}

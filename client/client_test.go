@@ -607,3 +607,79 @@ func waitDone(wg *sync.WaitGroup) {
 		panic("callback not dispatched: rollback wiped other subscribers' callbacks")
 	}
 }
+
+// TestDeregister_EmptySelfName_ReturnsErr 回归 #153：Deregister 对空服务名
+// 不校验、与 DeregisterAs/Register 不对称——未 Init 时以 Service="" 现算
+// 实例打给 provider，调用方拿不到「没先 Init」的根因信号。修复后与
+// DeregisterAs 同序：参数校验（空名 → ErrServiceNameRequired）先于环境
+// 检查（无 registrar 的 no-op）。
+func TestDeregister_EmptySelfName_ReturnsErr(t *testing.T) {
+	// 未 Init 且无 registrar：参数校验先于环境检查，仍返回 ErrServiceNameRequired
+	c := New()
+	if err := c.Deregister(context.Background(), 8080); !errors.Is(err, ErrServiceNameRequired) {
+		t.Fatalf("#153 regression: expected ErrServiceNameRequired for empty self name, got %v", err)
+	}
+	// 未 Init 但有 registrar：同一校验、同一错误
+	c2 := New(WithRegistrar(&registrymocks.Registrar{}))
+	if err := c2.Deregister(context.Background(), 8080); !errors.Is(err, ErrServiceNameRequired) {
+		t.Fatalf("#153 regression: expected ErrServiceNameRequired with registrar but no Init, got %v", err)
+	}
+	// 对照组：Init 后（服务名已记录）注销走正常路径（无 registrar = no-op nil）
+	c3 := New()
+	c3.setSelfServiceNameIfEmpty("init-svc")
+	if err := c3.Deregister(context.Background(), 8080); err != nil {
+		t.Fatalf("deregister with known name should succeed (no registrar = no-op), got %v", err)
+	}
+}
+
+// TestGetInstances_SingleflightWaitersSharePublishedSnapshot 钉住 #151 的
+// 现行契约（#155 rework 后）：singleflight 等待方共享同一份「已发布只读
+// 快照」——热路径零拷贝（#149）以「调用方不得修改返回实例」的快照契约
+// 替代按调用方拷贝（每请求深拷贝实例列表 + Metadata map 是 nns-endpoint
+// 每请求调用的稳态分配源，BenchmarkGetInstances_CacheHit_* 钉分配数）。
+//
+// 本测试断言全部调用方（lead + 等待方）拿到的 backing array 元素地址一致
+// （共享同一只读快照）；谁把等待方改回按调用方拷贝，必须连带修订 #149
+// 的快照契约与 bench 口径——此断言就是把该决定显式钉住的证物。
+func TestGetInstances_SingleflightWaitersSharePublishedSnapshot(t *testing.T) {
+	disc := &countingDiscoverer{
+		delay: 50 * time.Millisecond, // 慢 Discover：让并发调用落入同一 flight
+		result: []registry.Instance{
+			{IP: "10.0.0.1", Port: 8080, Metadata: map[string]string{"v": "1"}},
+		},
+	}
+	c := newTestClient(t, WithDiscoverer(disc))
+
+	const callers = 4
+	results := make([][]registry.Instance, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			insts, err := c.GetInstances(context.Background(), "svc-share")
+			if err != nil {
+				t.Errorf("GetInstances #%d: %v", i, err)
+				return
+			}
+			results[i] = insts
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	for i := 0; i < callers; i++ {
+		if len(results[i]) != 1 {
+			t.Fatalf("caller %d got empty result", i)
+		}
+		if &results[i][0] != &results[0][0] {
+			t.Fatalf("#151: caller %d got a distinct copy of the instances slice; "+
+				"want the shared published read-only snapshot (#149 zero-copy contract)", i)
+		}
+	}
+	if calls := disc.getCalls(); calls != 1 {
+		t.Errorf("discover called %d times, want 1 (singleflight)", calls)
+	}
+}

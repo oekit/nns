@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/oekit/concurrency/async"
+	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
 )
 
@@ -39,13 +41,13 @@ func (c *ServiceClient) LocalServiceInit(ctx context.Context, serviceName string
 		content, err := c.configStore.GetConfig(ctx, serviceName, c.configGroup)
 		switch {
 		case err != nil:
-			nnsLog.Warn("get service config failed, using default", "service", serviceName, "err", err)
+			nnsLog.Warn("get service config failed, using default", "service", serviceName, logx.ErrKey, err)
 		case content != "":
 			if err := json.Unmarshal([]byte(content), basic); err != nil {
 				// 服务元数据（超时/重试/负载均衡调优项）解析失败只降级默认值，
 				// 不拖垮整个 NNS 初始化：dataId 与应用 YAML 配置撞车、或元数据
 				// 写坏时，服务发现整体不可用属于过重的惩罚。
-				nnsLog.Warn("unmarshal service config failed, using default", "service", serviceName, "err", err)
+				nnsLog.Warn("unmarshal service config failed, using default", "service", serviceName, logx.ErrKey, err)
 			}
 		}
 	} else {
@@ -158,7 +160,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 			basic := metadata.NewServiceBasic()
 			if data != "" {
 				if err := json.Unmarshal([]byte(data), basic); err != nil {
-					nnsLog.Warn("unmarshal changed config failed", "err", err)
+					nnsLog.Warn("unmarshal changed config failed", logx.ErrKey, err)
 					return
 				}
 			}
@@ -190,7 +192,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 			c.mu.Lock()
 			delete(c.watchedServices, serviceName)
 			c.mu.Unlock()
-			nnsLog.Warn("listen service config failed", "service", serviceName, "err", err)
+			nnsLog.Warn("listen service config failed", "service", serviceName, logx.ErrKey, err)
 			return
 		}
 
@@ -202,7 +204,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
 		c.mu.RUnlock()
 		if closedDuringRegister {
 			if stopErr := c.configStore.StopListenConfig(context.Background(), serviceName, c.configGroup); stopErr != nil {
-				nnsLog.Warn("stop listen config after close failed", "service", serviceName, "err", stopErr)
+				nnsLog.Warn("stop listen config after close failed", "service", serviceName, logx.ErrKey, stopErr)
 			}
 		}
 	})

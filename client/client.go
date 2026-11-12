@@ -76,7 +76,9 @@ type ServiceClient struct {
 	registeredInstances map[instanceKey]registry.Instance
 
 	// 服务实例变更回调：存指针包装（Go 函数不可比较，指针可按身份删除），
-	// 并发订阅同一服务时单方失败只回滚自身、不抹掉他方已注册的回调
+	// 并发订阅同一服务时单方失败只回滚自身、不抹掉他方已注册的回调。
+	// 切片一经发布不再原地改写（copy-on-write，#165）：追加/回滚都发布
+	// 全新切片，推送扇出（newDispatch）在锁外遍历旧快照无数据竞争。
 	instanceCallbacks map[string][]*instanceCallback
 	// 已**成功**向 provider 注册 SDK 监听的服务集合（SubscribeService 去重，
 	// 避免 N 次订阅 → 每次推送触发 N² 次回调）
@@ -354,12 +356,14 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 		for svc := range c.subscribedServices {
 			subscribed = append(subscribed, svc)
 		}
-		// 在途注册也要注销：注册方可能正在 provider 侧建立监听，
-		// Close 时只清本地标记 ⇒ 监听残留（Close 后仍在推送）。
-		for svc := range c.subscribing {
-			if _, ok := c.subscribedServices[svc]; !ok {
-				subscribed = append(subscribed, svc)
-			}
+		// #152：在途注册**先等出结果再注销**（下方 select）——此前把在途
+		// 注册的服务直接并进注销清单，Unsubscribe 可能先于 provider 侧的
+		// Subscribe 落地 ⇒ 监听注册在注销之后，永久残留（Close 是终结
+		// 操作，无人再补注销）。成功出结果者由 ensureSubscribe 的 closed
+		// 复查自行补偿注销；失败者 provider 侧本就没有监听。
+		inflight := make([]*subscribeCall, 0, len(c.subscribing))
+		for _, call := range c.subscribing {
+			inflight = append(inflight, call)
 		}
 		c.subscribedServices = make(map[string]bool)
 		c.instanceCallbacks = make(map[string][]*instanceCallback)
@@ -371,12 +375,26 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 		closeCtx, cancel := context.WithTimeout(ctx, closeDefaultTimeout)
 		defer cancel()
 
+		// #152：等在途注册出结果（closeCtx 预算内）。等待不持锁——注册方
+		// 公布结果需要 callbackMu，持锁等待会死锁。预算耗尽时剩余在途
+		// 注册的补偿由 ensureSubscribe 的 closed 复查兜底（其公布结果时
+		// 必见 closed，立即补 Unsubscribe）。
+	waitInflight:
+		for _, call := range inflight {
+			select {
+			case <-call.done:
+			case <-closeCtx.Done():
+				nnsLog.Warn("timeout waiting for in-flight subscribe on close", "pending", len(inflight))
+				break waitInflight
+			}
+		}
+
 		// 实例订阅注销：此前只停配置监听，SDK 侧订阅残留，
 		// 推送回调依旧激活（Close 后仍改内部状态）
 		if c.subscriber != nil && !c.mockMode {
 			for _, svc := range subscribed {
 				if err := c.subscriber.Unsubscribe(closeCtx, svc); err != nil {
-					nnsLog.Warn("unsubscribe failed on close", "service", svc, "err", err)
+					nnsLog.Warn("unsubscribe failed on close", "service", svc, logx.ErrKey, err)
 					errs = append(errs, fmt.Errorf("unsubscribe %s: %w", svc, err))
 				}
 			}
@@ -384,7 +402,7 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 		if c.configStore != nil {
 			for _, svc := range services {
 				if err := c.configStore.StopListenConfig(closeCtx, svc, c.configGroup); err != nil {
-					nnsLog.Warn("stop listen config failed", "service", svc, "err", err)
+					nnsLog.Warn("stop listen config failed", "service", svc, logx.ErrKey, err)
 					errs = append(errs, fmt.Errorf("stop listen config %s: %w", svc, err))
 				}
 			}
