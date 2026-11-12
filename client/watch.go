@@ -156,18 +156,19 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		compensate := false
 		c.callbackMu.Lock()
 		delete(c.subscribing, serviceName)
-		if err != nil {
+		switch {
+		case err != nil:
 			// 回滚：只摘除本次注册的条目（并发订阅方不受影响），
 			// 并把服务标记留在「未注册」⇒ 等待者接手重试。
 			c.rollbackEntryLocked(serviceName, entry)
-		} else if c.closed.Load() {
+		case c.closed.Load():
 			// #152：注册期间 Close 已跑完全部清理——这次 Subscribe 落在了
 			// Close 的 Unsubscribe 之后（或 Close 的等待预算已耗尽），provider
 			// 侧监听无人再注销 ⇒ 立即补偿注销；且不得复写 subscribedServices
 			// （Close 已清空，重新置位会让已关闭的客户端被标回「已订阅」）。
 			// 对齐 WatchService 注册成功后的 closed 复查补偿（config.go）。
 			compensate = true
-		} else {
+		default:
 			c.subscribedServices[serviceName] = true
 		}
 		c.callbackMu.Unlock()
