@@ -209,7 +209,7 @@ func TestEnsureSubscribe_ClosedAtLoopTop_NoProviderCall(t *testing.T) {
 	c.callbackMu.Unlock()
 
 	entry := &instanceCallback{fn: func([]registry.Instance) {}}
-	_, err := c.ensureSubscribe(context.Background(), "svc-looptop", entry)
+	_, _, err := c.ensureSubscribe(context.Background(), "svc-looptop", entry, nil)
 	if !errors.Is(err, ErrClientClosed) {
 		t.Fatalf("ensureSubscribe after close must return ErrClientClosed, got %v", err)
 	}
