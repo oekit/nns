@@ -223,14 +223,6 @@ func (c *ServiceClient) GetLocalRegion() string {
 	return ""
 }
 
-// GetRegistrar 返回内部的 registrar 接口（供 nns/kitex 适配器使用）。
-//
-// Deprecated: 与 Registrar() 完全等价（#146 双访问器收敛）。新代码请用
-// Registrar()；kitex/hertz 适配层迁移完成前本转发保留，之后随 major 删除。
-func (c *ServiceClient) GetRegistrar() registry.Registrar {
-	return c.Registrar()
-}
-
 // GetDepService 返回依赖服务配置的快照（并发安全）。
 // 注意是结构体浅拷贝：嵌套的指针/map 字段（如 TimeoutRetryCfg）与内部状态共享，
 // 调用方不得修改；并发安全由 WatchService 对字段的整体替换保证。

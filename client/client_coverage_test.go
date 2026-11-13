@@ -204,24 +204,6 @@ func TestGetLocalRegion(t *testing.T) {
 	}
 }
 
-// TestGetRegistrar covers the 0%-coverage GetRegistrar accessor.
-func TestGetRegistrar_NilByDefault(t *testing.T) {
-	c := newTestClient(t)
-	if got := c.GetRegistrar(); got != nil {
-		t.Error("expected nil registrar by default")
-	}
-}
-
-// TestGetRegistrar_ReturnsInjected verifies GetRegistrar returns the
-// injected registrar (used by nns/kitex and nns/hertz adapters).
-func TestGetRegistrar_ReturnsInjected(t *testing.T) {
-	r := &registrymocks.Registrar{}
-	c := newTestClient(t, WithRegistrar(r))
-	if got := c.GetRegistrar(); got == nil {
-		t.Error("expected non-nil registrar after injection")
-	}
-}
-
 // TestGetInstancesFromStaticOrCache_StaticHit covers the static-hit
 // branch in the internal helper. Exercises via GetInstances.
 func TestGetInstancesFromStaticOrCache_StaticHit(t *testing.T) {
