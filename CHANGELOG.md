@@ -1,3 +1,9 @@
+## [v0.8.2] — 2026-11-13
+
+- fix(client): 订阅/配置两侧在途等待语义统一——幽灵订阅与孤儿监听窗口闭合（#173 #170）。#173：在途订阅槽（subscribing）与回调条目登记同帧发布，覆盖 SubscribeService 全程（登记/等待/去重初始回调/provider 注册）——此前槽在 ensureSubscribe 成为注册方时才登记，登记窗口对退订不可见，退订可整段插队：provider 退订先落地、在途订阅随后注册监听 ⇒ 已退订服务被幽灵复活、退订谎报成功；持槽等在途退订时先让位再等（死锁环闭合），等待者接手注册时补登自己的槽。#170：watching/unwatching 在途槽与订阅侧同构——UnwatchService 先等在途 ListenConfig 落地再 Stop（此前取消先于注册落地成 no-op，监听落地成孤儿：再次 Unwatch 与 Close 全部 no-op，热更回调推到进程结束）；WatchService 见在途退订先等出结果再登记（否则监听被在途退订按 dataId 拆除而标记在位 ⇒ 永不重注册）；注册后补偿条件扩为 closed 或已被 Unwatch；CloseWithContext 快照 watching 槽等出结果再按快照 Stop（#152 同款两层）。回归：-race 旧红新绿均实测（git stash 前后对照）。
+
+关联问题单：nns#173、nns#170。
+
 ## [v0.8.1] — 2026-11-13
 
 - 7 单修复批（L9 车道 #171）：Discoverer stale 缓存跳过（#150）、Close 等在途 Subscribe（#152）、Deregister 空名校验（#153）、GetLocalService 浅拷贝（#154）、metadata.Endpoint 孤儿（#156）、扇出锁外遍历 COW（#165）、singleflight 快照契约（#151）；地板对齐 pkg v0.47.0。
