@@ -55,6 +55,23 @@ type ServiceClient struct {
 
 	// 已监听的服务集合（WatchService 去重）
 	watchedServices map[string]bool
+	// watching 记录**正在向 provider 注册**配置监听的服务（#170）。
+	//
+	// WatchService 的去重标记同步置位，真正的 configStore.ListenConfig 在
+	// async.GoSafe 里异步落地——标记在位 ≠ 监听已落地。UnwatchService /
+	// Close 若不等落地就 StopListenConfig，取消先于注册落地（dataId 粒度
+	// 取消对未注册监听是 no-op），监听随后落地成**孤儿**：再次 Unwatch 因
+	// 标记已摘而 no-op、Close 的取消清单来自快照同样不含它——SDK 监听与
+	// goroutine 只能活到进程退出，配置热更回调持续触发（退订语义失效）。
+	// 与订阅侧 subscribing/unsubscribing（#147/#173）同一套在途交接语义：
+	// done 关闭即该次注册已出结果（成功或失败），等待者据此重新决策。
+	watching map[string]*subscribeCall
+	// unwatching 记录**正在注销**配置监听的服务（#170）。与 unsubscribing
+	// 同构：并发 UnwatchService 去重到单个 provider 调用；WatchService 的
+	// 同步登记段见到本标记时等待退订出结果再登记——否则本方 ListenConfig
+	// 落地后可能被在途退订按 dataId 一并拆除，而本地标记已置位 ⇒ 永不重
+	// 注册 ⇒ 配置热更静默失联。
+	unwatching map[string]*subscribeCall
 	// 配置变更回调（endpoint factory 注册 balancer 重置）。
 	// 存指针包装条目（ConfigChangeHandle）：Go 函数值不可比较，指针可按
 	// 身份摘除——OffConfigChange 按注册句柄精确注销单个回调，
@@ -272,6 +289,8 @@ func New(opts ...ClientOption) *ServiceClient {
 	c := &ServiceClient{
 		depService:         make(map[string]*metadata.ServiceBasic),
 		watchedServices:    make(map[string]bool),
+		watching:           make(map[string]*subscribeCall),
+		unwatching:         make(map[string]*subscribeCall),
 		instanceCallbacks:  make(map[string][]*instanceCallback),
 		subscribedServices: make(map[string]bool),
 		subscribing:        make(map[string]*subscribeCall),
@@ -344,6 +363,13 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 		for svc := range c.watchedServices {
 			services = append(services, svc)
 		}
+		// #170：在途配置注册的槽一并快照——下方等其出结果后再按快照
+		// Stop，否则 Stop 先于 ListenConfig 落地 ⇒ 孤儿监听（预算耗尽由
+		// watchRegister 注册后补偿的 closed 复查兜底）。
+		inflightWatches := make([]*subscribeCall, 0, len(c.watching))
+		for _, call := range c.watching {
+			inflightWatches = append(inflightWatches, call)
+		}
 		c.watchedServices = make(map[string]bool)
 		c.configChangeCallbacks = nil
 		// Close 是终结操作：已注册实例的身份缓存一并清空（#75），
@@ -386,6 +412,20 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 			case <-closeCtx.Done():
 				nnsLog.Warn("timeout waiting for in-flight subscribe on close", "pending", len(inflight))
 				break waitInflight
+			}
+		}
+
+		// #170：等在途配置注册出结果（同款有界预算）再按快照 Stop——
+		// StopListenConfig 先于 ListenConfig 落地对未注册监听是 no-op，
+		// 监听随后落地成孤儿（再次 Unwatch/Close 都不会再取消它）。预算
+		// 耗尽时由 watchRegister 注册后补偿的 closed 复查兜底。
+	waitInflightWatch:
+		for _, call := range inflightWatches {
+			select {
+			case <-call.done:
+			case <-closeCtx.Done():
+				nnsLog.Warn("timeout waiting for in-flight config watch on close", "pending", len(inflightWatches))
+				break waitInflightWatch
 			}
 		}
 
