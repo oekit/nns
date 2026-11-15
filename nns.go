@@ -185,23 +185,28 @@ func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 // 构造函数理论上仅在 SDK client 为 nil 时失败（此处已排除），但失败模式
 // 可能随版本变化，故记录日志而非静默吞掉——避免未来回归导致组件静默降级。
 func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) ([]client.ClientOption, []func()) {
+	// #209：空分组回填 DEFAULT_GROUP 再灌入 provider——nacosimpl 的三个
+	// With*Group 对空串是**覆盖**（把构造器内置默认 DEFAULT_GROUP 抹成 ""），
+	// 与 client.WithConfigGroup 的空回填同口径（registry#51 契约）。
+	group := cfg.GroupOrDefault()
+
 	namingClient, err := nacos.NewNamingClient(cfg)
 	if err != nil {
 		nnsLog.Warn("create naming client failed, will use cache/static instances", logx.ErrKey, err)
 		return clientOpts, nil
 	}
 
-	if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(cfg.Group)); e != nil {
+	if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(group)); e != nil {
 		nnsLog.Warn("create discoverer failed, degrading to cache/static", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithDiscoverer(d))
 	}
-	if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(cfg.Group)); e != nil {
+	if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(group)); e != nil {
 		nnsLog.Warn("create subscriber failed, degrading", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithSubscriber(s))
 	}
-	if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(cfg.Group)); e != nil {
+	if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(group)); e != nil {
 		nnsLog.Warn("create registrar failed, degrading", logx.ErrKey, e)
 	} else {
 		clientOpts = append(clientOpts, client.WithRegistrar(r))

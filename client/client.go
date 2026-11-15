@@ -224,8 +224,18 @@ func WithConfigStore(s registry.ConfigStore) ClientOption {
 
 // WithConfigGroup 设置配置读取的分组（默认 provider 配置里的 group 概念，
 // 本包只把它当不透明字符串透传给 ConfigStore）。
+//
+// 空值回填 "DEFAULT_GROUP"（#209，与 registry/nacos Bootstrap.GroupOrDefault
+// 同口径——registry#51）：yaml 只写 nacos.addr 不写 group 时，此前空串原样
+// 进入 ListenConfig，SDK 直接报 "Group can not be empty" 且被门面吞掉，
+// 配置热更静默失效（GetConfig 空分组 SDK 侧有兜底，读路径侥幸正常）。
 func WithConfigGroup(group string) ClientOption {
-	return func(c *ServiceClient) { c.configGroup = group }
+	return func(c *ServiceClient) {
+		if group == "" {
+			group = "DEFAULT_GROUP"
+		}
+		c.configGroup = group
+	}
 }
 
 // getSelfServiceName 读取 LocalServiceInit 记录的自身服务名。

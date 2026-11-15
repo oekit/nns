@@ -66,6 +66,31 @@ func TestOnConfigChange_PanicIsolated(t *testing.T) {
 	}
 }
 
+// TestWithConfigGroup_EmptyBackfillsDefaultGroup 回归（#209）：空分组必须
+// 回填 DEFAULT_GROUP——空串原样进 ListenConfig 会被 SDK 拒绝
+// （"Group can not be empty"）且旧实现仅 Warn，热更静默失效。
+func TestWithConfigGroup_EmptyBackfillsDefaultGroup(t *testing.T) {
+	if got := New(WithConfigGroup("")).configGroup; got != "DEFAULT_GROUP" {
+		t.Errorf("empty group must backfill DEFAULT_GROUP, got %q", got)
+	}
+	if got := New(WithConfigGroup("biz")).configGroup; got != "biz" {
+		t.Errorf("explicit group must pass through, got %q", got)
+	}
+}
+
+// TestWatchService_EmptyConfigGroupListensOnDefaultGroup 端到端钉 #209 的
+// 失败面：调用方漏配 group 时 ListenConfig 必须收到 DEFAULT_GROUP（修复前
+// 收到空串，provider 侧注册失败而本地标记已置位 ⇒ 热更静默失效）。
+func TestWatchService_EmptyConfigGroupListensOnDefaultGroup(t *testing.T) {
+	store := registrymocks.NewConfigStore()
+	c := newTestClient(t, WithConfigStore(store), WithConfigGroup(""))
+
+	if err := c.WatchService(context.Background(), "svc-a"); err != nil {
+		t.Fatalf("WatchService: %v", err)
+	}
+	waitListening(t, store, "svc-a", "DEFAULT_GROUP")
+}
+
 // TestWatchService_ReturnsListenConfigError 回归测试（#211）：
 // ListenConfig 注册失败必须由 WatchService 上抛——此前 void 返回 + 仅 Warn，
 // 热更挂没挂上无从查询（Init 照样返回 nil，启动「成功」而热更静默失效）。
