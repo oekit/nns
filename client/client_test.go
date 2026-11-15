@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -256,6 +257,36 @@ func TestDeregister_NoRegistrar_NoError(t *testing.T) {
 	}
 }
 
+// TestRegister_InvalidPortFailClosed 回归（#212）：端口维度与 #68 的 IP 维度
+// 同门 fail-closed——0/负/超 65535 在 buildInstance 拒绝并包
+// registry.ErrInvalidPort（可 errors.Is 判定），不再经 nacosimpl 的 uint64
+// 转换注册成天文数字实例。Register/RegisterAs/Deregister/DeregisterAs 四个
+// 入口同门（注销走现算路径时同样过 buildInstance）。
+func TestRegister_InvalidPortFailClosed(t *testing.T) {
+	t.Setenv("POD_IP", "10.1.1.1")
+	reg := &registrymocks.Registrar{}
+	c := newTestClient(t, WithRegistrar(reg))
+	ctx := context.Background()
+
+	for _, port := range []int{0, -1, 65536} {
+		cases := map[string]error{
+			"Register":     c.Register(ctx, port),
+			"RegisterAs":   c.RegisterAs(ctx, "svc-port", port),
+			"Deregister":   c.Deregister(ctx, port),
+			"DeregisterAs": c.DeregisterAs(ctx, "svc-port", port),
+		}
+		for name, err := range cases {
+			if !errors.Is(err, registry.ErrInvalidPort) {
+				t.Errorf("%s(port=%d): err = %v, want wrapped registry.ErrInvalidPort", name, port, err)
+			}
+		}
+	}
+	if len(reg.Registered) != 0 || len(reg.Deregistered) != 0 {
+		t.Fatalf("invalid port must not reach registrar, got registered=%d deregistered=%d",
+			len(reg.Registered), len(reg.Deregistered))
+	}
+}
+
 func TestLocalServiceInit_FromConfigStore(t *testing.T) {
 	store := registrymocks.NewConfigStore()
 	store.Configs["my-svc/DEFAULT_GROUP"] = `{"conn_timeout": 2000, "read_timeout": 8000, "retry": 5}`
@@ -288,6 +319,36 @@ func TestLocalServiceInit_ConfigStoreError_Defaults(t *testing.T) {
 	// Should return defaults
 	if basic.ConnTimeout != 1000 {
 		t.Errorf("expected default ConnTimeout 1000, got %d", basic.ConnTimeout)
+	}
+}
+
+// TestLocalServiceInit_LogServiceFieldIsNameString 回归（#213）：收尾日志的
+// "service" 字段必须是服务名字符串——此前塞了 *ServiceBasic 结构体指针，
+// 结构化管道按 service 字段聚类时读到 JSON 对象而非字符串（同字段两种类型，
+// 无法按服务名归档）。
+func TestLocalServiceInit_LogServiceFieldIsNameString(t *testing.T) {
+	logs := captureLogs(t)
+	// 非 mock、无 configStore：走完整路径到收尾日志（默认值降级段）
+	c := newTestClient(t)
+
+	if _, err := c.LocalServiceInit(context.Background(), "svc-log"); err != nil {
+		t.Fatalf("LocalServiceInit: %v", err)
+	}
+
+	var initLine string
+	for _, l := range logs.snapshot() {
+		if strings.Contains(l, "local service initialized") {
+			initLine = l
+			break
+		}
+	}
+	if initLine == "" {
+		t.Fatalf("missing 'local service initialized' log, captured: %v", logs.snapshot())
+	}
+	// kv 相邻拼接形态（fmt.Sprint 对 string+string 不加空格）：修复后是
+	// "servicesvc-log"；修复前第二操作数是结构体指针，形态为 "service&{...}"
+	if !strings.Contains(initLine, "service"+"svc-log") {
+		t.Fatalf("service field must be the service name string (#213), got: %s", initLine)
 	}
 }
 

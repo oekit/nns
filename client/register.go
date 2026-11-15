@@ -191,6 +191,16 @@ func (c *ServiceClient) forgetRegistered(serviceName string, port int) {
 // buildInstance 构造注册实例：服务名与端口由调用方给出，IP 取本机
 // Pod IP，权重/元数据/分组/集群取自 opts。
 func (c *ServiceClient) buildInstance(serviceName string, port int, opts ...registry.RegisterOptionFunc) (registry.Instance, error) {
+	// #104 同门（#212）：端口是调用方参数——参数校验先于环境检查（与服务名
+	// 空值校验同序），1..65535 之外 fail-closed 拒绝并包 registry.ErrInvalidPort。
+	// 此前端口零校验：0/负端口经 nacosimpl 的 uint64 转换（registrar.go）
+	// 变成天文数字原样注册进 Nacos，消费方拨号必然失败且值已失去可读性；
+	// registry.ParseAddr 的 #104 端口门覆盖不到 Register 这条直传路径。
+	if port < 1 || port > 65535 {
+		return registry.Instance{}, fmt.Errorf(
+			"nns/client: invalid port %d for %s (must be within 1..65535 to be dialable): %w",
+			port, serviceName, registry.ErrInvalidPort)
+	}
 	opt := registry.Apply(opts...)
 	ip := network.GetPodIP()
 	// #68：注册路径拒绝回环地址——GetPodIP 的 127.0.0.1 静默回退（网卡枚举

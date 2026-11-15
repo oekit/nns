@@ -131,7 +131,8 @@ func WithLocalServiceConfig(serviceName string, basic *metadata.ServiceBasic) NN
 //
 // Provider 默认构造（非 mock 时）：创建 naming/config SDK 客户端并注入
 // registry/nacos 的 Discoverer/Subscriber/Registrar/ConfigStore；构造失败
-// 只 Warn 降级（缓存/静态实例路径），不阻断启动——与既有降级语义一致。
+// 只 Warn 降级且**两侧独立不连坐**（naming 失败降级缓存/静态实例、config
+// 照常创建，#210），不阻断启动——与既有降级语义一致。
 // 默认路径创建的 SDK 客户端归本实例所有，Close 时释放。
 func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 	o := &clientOptions{
@@ -184,31 +185,41 @@ func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 // appendNacosDefaults 把 Nacos 配置物化为 provider 注入项。
 // 构造函数理论上仅在 SDK client 为 nil 时失败（此处已排除），但失败模式
 // 可能随版本变化，故记录日志而非静默吞掉——避免未来回归导致组件静默降级。
+//
+// naming 与 config 是两次**彼此独立**的 SDK 构造（#210）：任一侧失败只降级
+// 该侧（naming 失败 ⇒ discoverer/subscriber/registrar 三件套缺席，config
+// 照常创建；config 失败 ⇒ 退回本地配置），不连坐另一侧——两个正交能力各有
+// 独立 closer，早退绑成同生共死会让配置面在 naming 抖动时整面静默失效。
 func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) ([]client.ClientOption, []func()) {
+	// #209：空分组回填 DEFAULT_GROUP 再灌入 provider——nacosimpl 的三个
+	// With*Group 对空串是**覆盖**（把构造器内置默认 DEFAULT_GROUP 抹成 ""），
+	// 与 client.WithConfigGroup 的空回填同口径（registry#51 契约）。
+	group := cfg.GroupOrDefault()
+
+	var closers []func()
+
 	namingClient, err := nacos.NewNamingClient(cfg)
 	if err != nil {
 		nnsLog.Warn("create naming client failed, will use cache/static instances", logx.ErrKey, err)
-		return clientOpts, nil
-	}
+	} else {
+		closers = append(closers, namingClient.CloseClient)
 
-	if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(cfg.Group)); e != nil {
-		nnsLog.Warn("create discoverer failed, degrading to cache/static", logx.ErrKey, e)
-	} else {
-		clientOpts = append(clientOpts, client.WithDiscoverer(d))
+		if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(group)); e != nil {
+			nnsLog.Warn("create discoverer failed, degrading to cache/static", logx.ErrKey, e)
+		} else {
+			clientOpts = append(clientOpts, client.WithDiscoverer(d))
+		}
+		if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(group)); e != nil {
+			nnsLog.Warn("create subscriber failed, degrading", logx.ErrKey, e)
+		} else {
+			clientOpts = append(clientOpts, client.WithSubscriber(s))
+		}
+		if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(group)); e != nil {
+			nnsLog.Warn("create registrar failed, degrading", logx.ErrKey, e)
+		} else {
+			clientOpts = append(clientOpts, client.WithRegistrar(r))
+		}
 	}
-	if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(cfg.Group)); e != nil {
-		nnsLog.Warn("create subscriber failed, degrading", logx.ErrKey, e)
-	} else {
-		clientOpts = append(clientOpts, client.WithSubscriber(s))
-	}
-	if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(cfg.Group)); e != nil {
-		nnsLog.Warn("create registrar failed, degrading", logx.ErrKey, e)
-	} else {
-		clientOpts = append(clientOpts, client.WithRegistrar(r))
-	}
-
-	var closers []func()
-	closers = append(closers, namingClient.CloseClient)
 
 	configClient, err := nacos.NewConfigClient(cfg)
 	if err != nil {
@@ -226,6 +237,11 @@ func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) 
 }
 
 // Init 初始化本地服务并加载依赖服务配置，同时监听本地服务及所有依赖服务的配置变更（支持热更新）。
+//
+// 配置监听注册失败会聚合进返回值（#211）：此前 WatchService 无返回值、失败
+// 仅 Warn，Init 返回 nil 而热更实际没挂上——启动「成功」却永远收不到配置
+// 变更，唯一线索是一条 Warn。现在 Init 逐个上抛（errors.Join 聚合，点名
+// 每个监听失败的服务），调用方可据此重试或降级启动。
 func (n *NNSClient) Init(ctx context.Context, serviceName string, depServices []string) error {
 	_, err := n.client.LocalServiceInit(ctx, serviceName)
 	if err != nil {
@@ -238,13 +254,18 @@ func (n *NNSClient) Init(ctx context.Context, serviceName string, depServices []
 		}
 	}
 
-	// 监听依赖服务配置变更（支持热更新）
+	// 监听依赖服务配置变更（支持热更新）：注册失败上抛（#211），
+	// 全部跑完再聚合返回——单个服务失败不阻断其余服务的监听。
+	watchErrs := make([]error, 0, len(depServices)+1)
 	for _, ds := range depServices {
-		n.client.WatchService(ctx, ds)
+		if err := n.client.WatchService(ctx, ds); err != nil {
+			watchErrs = append(watchErrs, err)
+		}
 	}
-	n.client.WatchService(ctx, serviceName)
-
-	return nil
+	if err := n.client.WatchService(ctx, serviceName); err != nil {
+		watchErrs = append(watchErrs, err)
+	}
+	return errors.Join(watchErrs...)
 }
 
 // Register 向注册中心注册当前服务实例。
