@@ -226,6 +226,11 @@ func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) 
 }
 
 // Init 初始化本地服务并加载依赖服务配置，同时监听本地服务及所有依赖服务的配置变更（支持热更新）。
+//
+// 配置监听注册失败会聚合进返回值（#211）：此前 WatchService 无返回值、失败
+// 仅 Warn，Init 返回 nil 而热更实际没挂上——启动「成功」却永远收不到配置
+// 变更，唯一线索是一条 Warn。现在 Init 逐个上抛（errors.Join 聚合，点名
+// 每个监听失败的服务），调用方可据此重试或降级启动。
 func (n *NNSClient) Init(ctx context.Context, serviceName string, depServices []string) error {
 	_, err := n.client.LocalServiceInit(ctx, serviceName)
 	if err != nil {
@@ -238,13 +243,18 @@ func (n *NNSClient) Init(ctx context.Context, serviceName string, depServices []
 		}
 	}
 
-	// 监听依赖服务配置变更（支持热更新）
+	// 监听依赖服务配置变更（支持热更新）：注册失败上抛（#211），
+	// 全部跑完再聚合返回——单个服务失败不阻断其余服务的监听。
+	watchErrs := make([]error, 0, len(depServices)+1)
 	for _, ds := range depServices {
-		n.client.WatchService(ctx, ds)
+		if err := n.client.WatchService(ctx, ds); err != nil {
+			watchErrs = append(watchErrs, err)
+		}
 	}
-	n.client.WatchService(ctx, serviceName)
-
-	return nil
+	if err := n.client.WatchService(ctx, serviceName); err != nil {
+		watchErrs = append(watchErrs, err)
+	}
+	return errors.Join(watchErrs...)
 }
 
 // Register 向注册中心注册当前服务实例。

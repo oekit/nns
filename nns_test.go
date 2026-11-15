@@ -2,11 +2,15 @@ package nns
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/oekit/nns/client"
 	"github.com/oekit/nns/metadata"
 	"github.com/oekit/registry"
 	nacospkg "github.com/oekit/registry/nacos"
+	"github.com/oekit/registry/registrymocks"
 )
 
 // TestNew_ReturnsIndependentInstances 是 NNS 状态治理的核心验收测试：
@@ -100,6 +104,35 @@ func TestInit_WithDepServices_MockMode(t *testing.T) {
 	err := c.Init(context.Background(), "my-service", []string{"dep-1"})
 	if err != nil {
 		t.Fatalf("Init error: %v", err)
+	}
+}
+
+// listenFailStore 是只在 ListenConfig 上失败的 ConfigStore 替身（#211）：
+// GetConfig 正常返回空配置，让 Init 走到监听注册段再失败。
+type listenFailStore struct {
+	*registrymocks.ConfigStore
+}
+
+func (s *listenFailStore) ListenConfig(context.Context, string, string, func(string)) error {
+	return errors.New("listen rejected")
+}
+
+// TestInit_WatchFailureAggregates 回归（#211）：ListenConfig 注册失败必须让
+// Init 返回错误——此前 Init 忽略 WatchService（void + 仅 Warn），启动「成功」
+// 而配置热更实际没挂上。聚合错误点名每个监听失败的服务。
+func TestInit_WatchFailureAggregates(t *testing.T) {
+	sc := client.New(client.WithConfigStore(
+		&listenFailStore{ConfigStore: registrymocks.NewConfigStore()}))
+	n := &NNSClient{client: sc}
+
+	err := n.Init(context.Background(), "local-svc", []string{"dep-1", "dep-2"})
+	if err == nil {
+		t.Fatal("Init must fail when config watch registration fails (#211)")
+	}
+	for _, name := range []string{"local-svc", "dep-1", "dep-2"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("aggregated error must name %s, got: %v", name, err)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -63,6 +64,91 @@ func TestOnConfigChange_PanicIsolated(t *testing.T) {
 	if !second.Load() {
 		t.Fatal("callback after a panicking callback was not invoked")
 	}
+}
+
+// TestWatchService_ReturnsListenConfigError 回归测试（#211）：
+// ListenConfig 注册失败必须由 WatchService 上抛——此前 void 返回 + 仅 Warn，
+// 热更挂没挂上无从查询（Init 照样返回 nil，启动「成功」而热更静默失效）。
+// 失败路径已回滚去重标记，恢复后重试即注册成功。
+func TestWatchService_ReturnsListenConfigError(t *testing.T) {
+	store := registrymocks.NewConfigStore()
+	store.SetErr(errors.New("nacos down"))
+
+	c := newTestClient(t, WithConfigStore(store))
+
+	err := c.WatchService(context.Background(), "svc-a")
+	if err == nil {
+		t.Fatal("WatchService must surface ListenConfig failure (#211), got nil")
+	}
+	if !strings.Contains(err.Error(), "svc-a") {
+		t.Fatalf("WatchService error must name the service, got: %v", err)
+	}
+
+	// 回滚后可重试：nacos 恢复即注册成功
+	store.SetErr(nil)
+	if err := c.WatchService(context.Background(), "svc-a"); err != nil {
+		t.Fatalf("retry after recovery: %v", err)
+	}
+	waitListening(t, store, "svc-a", "DEFAULT_GROUP")
+}
+
+// TestWatchService_AlreadyWatchedReturnsNil 钉住去重幂等路径的返回值（#211）：
+// 已成功监听的服务重复调用返回 nil，不重复向 provider 注册。
+func TestWatchService_AlreadyWatchedReturnsNil(t *testing.T) {
+	store := registrymocks.NewConfigStore()
+	c := newTestClient(t, WithConfigStore(store))
+
+	if err := c.WatchService(context.Background(), "svc-a"); err != nil {
+		t.Fatalf("first watch: %v", err)
+	}
+	if err := c.WatchService(context.Background(), "svc-a"); err != nil {
+		t.Fatalf("dedup watch must return nil, got: %v", err)
+	}
+	waitListening(t, store, "svc-a", "DEFAULT_GROUP")
+}
+
+// TestWatchService_CtxCancelWhileWaiting 钉住 #211 的等待预算：等注册落地
+// 期间 ctx 取消必须返回 ctx.Err()，不永久挂住（等待只挂在调用方 goroutine，
+// 预算由调用方 ctx 约束）。
+func TestWatchService_CtxCancelWhileWaiting(t *testing.T) {
+	store := newGatedConfigStore()
+	// Stop 闸预放行：本用例只 gate ListenConfig（注册在途）。
+	close(store.stopRelease)
+	c := newTestClient(t, WithConfigStore(store))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.WatchService(ctx, "dep-a") }()
+
+	select {
+	case <-store.listenEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("后台注册未进入 ListenConfig（在途窗口未开启）")
+	}
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("WatchService after ctx cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WatchService 未在 ctx 取消后返回（等待无预算约束）")
+	}
+
+	// 收场：放行注册让它出结果（失败回滚标记），不留悬挂 goroutine。
+	close(store.listenRelease)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.RLock()
+		watched := c.watchedServices["dep-a"]
+		c.mu.RUnlock()
+		if !watched {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("取消后的注册未出结果（标记未回滚）")
 }
 
 // TestWatchService_ListenFailureAllowsRetry 回归测试（W1-M12）：
