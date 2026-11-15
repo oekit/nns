@@ -1,3 +1,13 @@
+## [v0.9.1] — 2026-11-15
+
+- 空 cfg.Group 不再原样透传（#209）：New 对空分组给缺省值，ListenConfig 不再收到空 group
+- appendNacosDefaults 失败路径收口（#210）：naming client 创建失败不再提前返回吞掉后续默认值
+- WatchService 补错误返回（#211）：ListenConfig 失败从仅 Warn 升为可感知错误，热更失败不再静默
+- buildInstance 校验 port 范围（#212）：0/负数/超 65535 在入口拒绝，不再直通 Ser
+- LocalServiceInit 收尾日志类型修正（#213）：*ServiceBasic 不再塞进 %s 占位
+
+关联问题单：nns#209、nns#210、nns#211、nns#212、nns#213。
+
 ## [v0.9.0] — 2026-11-13
 
 - **BREAKING**：删除 (*ServiceClient).GetRegistrar() 双访问器（#146 终局）——kitex/hertz 适配层已全迁 Registrar()。下游迁移：GetRegistrar() → Registrar()（完全等价）。地板随迁 pkg v0.48.0 / logx v0.11.0 / concurrency v0.36.0。
