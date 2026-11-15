@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -318,6 +319,36 @@ func TestLocalServiceInit_ConfigStoreError_Defaults(t *testing.T) {
 	// Should return defaults
 	if basic.ConnTimeout != 1000 {
 		t.Errorf("expected default ConnTimeout 1000, got %d", basic.ConnTimeout)
+	}
+}
+
+// TestLocalServiceInit_LogServiceFieldIsNameString 回归（#213）：收尾日志的
+// "service" 字段必须是服务名字符串——此前塞了 *ServiceBasic 结构体指针，
+// 结构化管道按 service 字段聚类时读到 JSON 对象而非字符串（同字段两种类型，
+// 无法按服务名归档）。
+func TestLocalServiceInit_LogServiceFieldIsNameString(t *testing.T) {
+	logs := captureLogs(t)
+	// 非 mock、无 configStore：走完整路径到收尾日志（默认值降级段）
+	c := newTestClient(t)
+
+	if _, err := c.LocalServiceInit(context.Background(), "svc-log"); err != nil {
+		t.Fatalf("LocalServiceInit: %v", err)
+	}
+
+	var initLine string
+	for _, l := range logs.snapshot() {
+		if strings.Contains(l, "local service initialized") {
+			initLine = l
+			break
+		}
+	}
+	if initLine == "" {
+		t.Fatalf("missing 'local service initialized' log, captured: %v", logs.snapshot())
+	}
+	// kv 相邻拼接形态（fmt.Sprint 对 string+string 不加空格）：修复后是
+	// "servicesvc-log"；修复前第二操作数是结构体指针，形态为 "service&{...}"
+	if !strings.Contains(initLine, "service"+"svc-log") {
+		t.Fatalf("service field must be the service name string (#213), got: %s", initLine)
 	}
 }
 

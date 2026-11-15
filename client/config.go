@@ -61,7 +61,10 @@ func (c *ServiceClient) LocalServiceInit(ctx context.Context, serviceName string
 	c.localService = basic
 	c.mu.Unlock()
 
-	nnsLog.Info("local service initialized", "service", basic)
+	// "service" 字段在本包的既定语义是服务名字符串（同文件其余日志同口径）；
+	// 此前这里塞了 *ServiceBasic 结构体指针，结构化管道按 service 字段
+	// 聚类/索引时读到一个 JSON 对象而非字符串，无法按服务名归档（#213）。
+	nnsLog.Info("local service initialized", "service", serviceName)
 	return basic, nil
 }
 
