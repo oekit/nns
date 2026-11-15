@@ -131,7 +131,8 @@ func WithLocalServiceConfig(serviceName string, basic *metadata.ServiceBasic) NN
 //
 // Provider 默认构造（非 mock 时）：创建 naming/config SDK 客户端并注入
 // registry/nacos 的 Discoverer/Subscriber/Registrar/ConfigStore；构造失败
-// 只 Warn 降级（缓存/静态实例路径），不阻断启动——与既有降级语义一致。
+// 只 Warn 降级且**两侧独立不连坐**（naming 失败降级缓存/静态实例、config
+// 照常创建，#210），不阻断启动——与既有降级语义一致。
 // 默认路径创建的 SDK 客户端归本实例所有，Close 时释放。
 func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 	o := &clientOptions{
@@ -184,36 +185,41 @@ func New(cfg nacos.Bootstrap, opts ...NNSOption) *NNSClient {
 // appendNacosDefaults 把 Nacos 配置物化为 provider 注入项。
 // 构造函数理论上仅在 SDK client 为 nil 时失败（此处已排除），但失败模式
 // 可能随版本变化，故记录日志而非静默吞掉——避免未来回归导致组件静默降级。
+//
+// naming 与 config 是两次**彼此独立**的 SDK 构造（#210）：任一侧失败只降级
+// 该侧（naming 失败 ⇒ discoverer/subscriber/registrar 三件套缺席，config
+// 照常创建；config 失败 ⇒ 退回本地配置），不连坐另一侧——两个正交能力各有
+// 独立 closer，早退绑成同生共死会让配置面在 naming 抖动时整面静默失效。
 func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) ([]client.ClientOption, []func()) {
 	// #209：空分组回填 DEFAULT_GROUP 再灌入 provider——nacosimpl 的三个
 	// With*Group 对空串是**覆盖**（把构造器内置默认 DEFAULT_GROUP 抹成 ""），
 	// 与 client.WithConfigGroup 的空回填同口径（registry#51 契约）。
 	group := cfg.GroupOrDefault()
 
+	var closers []func()
+
 	namingClient, err := nacos.NewNamingClient(cfg)
 	if err != nil {
 		nnsLog.Warn("create naming client failed, will use cache/static instances", logx.ErrKey, err)
-		return clientOpts, nil
-	}
+	} else {
+		closers = append(closers, namingClient.CloseClient)
 
-	if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(group)); e != nil {
-		nnsLog.Warn("create discoverer failed, degrading to cache/static", logx.ErrKey, e)
-	} else {
-		clientOpts = append(clientOpts, client.WithDiscoverer(d))
+		if d, e := nacosimpl.NewDiscoverer(namingClient, nacosimpl.WithDiscovererGroup(group)); e != nil {
+			nnsLog.Warn("create discoverer failed, degrading to cache/static", logx.ErrKey, e)
+		} else {
+			clientOpts = append(clientOpts, client.WithDiscoverer(d))
+		}
+		if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(group)); e != nil {
+			nnsLog.Warn("create subscriber failed, degrading", logx.ErrKey, e)
+		} else {
+			clientOpts = append(clientOpts, client.WithSubscriber(s))
+		}
+		if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(group)); e != nil {
+			nnsLog.Warn("create registrar failed, degrading", logx.ErrKey, e)
+		} else {
+			clientOpts = append(clientOpts, client.WithRegistrar(r))
+		}
 	}
-	if s, e := nacosimpl.NewSubscriber(namingClient, nacosimpl.WithSubscriberGroup(group)); e != nil {
-		nnsLog.Warn("create subscriber failed, degrading", logx.ErrKey, e)
-	} else {
-		clientOpts = append(clientOpts, client.WithSubscriber(s))
-	}
-	if r, e := nacosimpl.NewRegistrar(namingClient, nacosimpl.WithRegistrarGroup(group)); e != nil {
-		nnsLog.Warn("create registrar failed, degrading", logx.ErrKey, e)
-	} else {
-		clientOpts = append(clientOpts, client.WithRegistrar(r))
-	}
-
-	var closers []func()
-	closers = append(closers, namingClient.CloseClient)
 
 	configClient, err := nacos.NewConfigClient(cfg)
 	if err != nil {
