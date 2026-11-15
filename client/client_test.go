@@ -256,6 +256,36 @@ func TestDeregister_NoRegistrar_NoError(t *testing.T) {
 	}
 }
 
+// TestRegister_InvalidPortFailClosed 回归（#212）：端口维度与 #68 的 IP 维度
+// 同门 fail-closed——0/负/超 65535 在 buildInstance 拒绝并包
+// registry.ErrInvalidPort（可 errors.Is 判定），不再经 nacosimpl 的 uint64
+// 转换注册成天文数字实例。Register/RegisterAs/Deregister/DeregisterAs 四个
+// 入口同门（注销走现算路径时同样过 buildInstance）。
+func TestRegister_InvalidPortFailClosed(t *testing.T) {
+	t.Setenv("POD_IP", "10.1.1.1")
+	reg := &registrymocks.Registrar{}
+	c := newTestClient(t, WithRegistrar(reg))
+	ctx := context.Background()
+
+	for _, port := range []int{0, -1, 65536} {
+		cases := map[string]error{
+			"Register":     c.Register(ctx, port),
+			"RegisterAs":   c.RegisterAs(ctx, "svc-port", port),
+			"Deregister":   c.Deregister(ctx, port),
+			"DeregisterAs": c.DeregisterAs(ctx, "svc-port", port),
+		}
+		for name, err := range cases {
+			if !errors.Is(err, registry.ErrInvalidPort) {
+				t.Errorf("%s(port=%d): err = %v, want wrapped registry.ErrInvalidPort", name, port, err)
+			}
+		}
+	}
+	if len(reg.Registered) != 0 || len(reg.Deregistered) != 0 {
+		t.Fatalf("invalid port must not reach registrar, got registered=%d deregistered=%d",
+			len(reg.Registered), len(reg.Deregistered))
+	}
+}
+
 func TestLocalServiceInit_FromConfigStore(t *testing.T) {
 	store := registrymocks.NewConfigStore()
 	store.Configs["my-svc/DEFAULT_GROUP"] = `{"conn_timeout": 2000, "read_timeout": 8000, "retry": 5}`
