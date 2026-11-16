@@ -3,13 +3,13 @@ package nns
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/oekit/logx"
 	"github.com/oekit/nns/client"
 	"github.com/oekit/nns/metadata"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 	"github.com/oekit/registry/nacos"
 	nacosimpl "github.com/oekit/registry/nacosimpl"
@@ -245,12 +245,12 @@ func appendNacosDefaults(clientOpts []client.ClientOption, cfg nacos.Bootstrap) 
 func (n *NNSClient) Init(ctx context.Context, serviceName string, depServices []string) error {
 	_, err := n.client.LocalServiceInit(ctx, serviceName)
 	if err != nil {
-		return fmt.Errorf("init local service: %w", err)
+		return pkgerrors.Wrapf(err, "init local service")
 	}
 
 	if len(depServices) > 0 {
 		if err := n.client.LoadDepService(ctx, depServices); err != nil {
-			return fmt.Errorf("load dep services: %w", err)
+			return pkgerrors.Wrapf(err, "load dep services")
 		}
 	}
 

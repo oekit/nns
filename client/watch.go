@@ -2,10 +2,10 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"slices"
 
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -231,7 +231,7 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		}
 
 		if err != nil {
-			return call, false, fmt.Errorf("subscribe service [%s]: %w", serviceName, err)
+			return call, false, pkgerrors.Wrapf(err, "subscribe service [%s]", serviceName)
 		}
 		return call, true, nil
 	}

@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/oekit/concurrency/singleflight"
 	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -451,7 +451,7 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 			for _, svc := range subscribed {
 				if err := c.subscriber.Unsubscribe(closeCtx, svc); err != nil {
 					nnsLog.Warn("unsubscribe failed on close", "service", svc, logx.ErrKey, err)
-					errs = append(errs, fmt.Errorf("unsubscribe %s: %w", svc, err))
+					errs = append(errs, pkgerrors.Wrapf(err, "unsubscribe %s", svc))
 				}
 			}
 		}
@@ -459,7 +459,7 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 			for _, svc := range services {
 				if err := c.configStore.StopListenConfig(closeCtx, svc, c.configGroup); err != nil {
 					nnsLog.Warn("stop listen config failed", "service", svc, logx.ErrKey, err)
-					errs = append(errs, fmt.Errorf("stop listen config %s: %w", svc, err))
+					errs = append(errs, pkgerrors.Wrapf(err, "stop listen config %s", svc))
 				}
 			}
 		}

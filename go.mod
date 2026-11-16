@@ -6,6 +6,7 @@ require (
 	github.com/oekit/concurrency v0.37.0
 	github.com/oekit/core v0.15.3
 	github.com/oekit/logx v0.11.0
+	github.com/oekit/pkg v0.52.0
 	github.com/oekit/registry v0.6.1
 	github.com/oekit/registry/nacos v0.2.0
 	github.com/oekit/registry/nacosimpl v0.3.0
@@ -46,7 +47,6 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/nacos-group/nacos-sdk-go/v2 v2.3.6 // indirect
-	github.com/oekit/pkg v0.50.0 // indirect
 	github.com/orcaman/concurrent-map v0.0.0-20210501183033-44dafcb38ecc // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/prometheus/client_golang v1.23.2 // indirect

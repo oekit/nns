@@ -2,12 +2,12 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -137,7 +137,7 @@ func (c *ServiceClient) resolveInstances(
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
 			return fb, nil
 		}
-		return nil, fmt.Errorf("no discoverer available and no cached or fallback instances for [%s]", serviceName)
+		return nil, pkgerrors.Newf("no discoverer available and no cached or fallback instances for [%s]", serviceName)
 	}
 
 	// 5. 从注册中心获取（singleflight 保护并发）
@@ -156,7 +156,7 @@ func (c *ServiceClient) resolveInstances(
 
 		rawInstances, derr := discover(ctx, serviceName)
 		if derr != nil {
-			return nil, fmt.Errorf("%s instances [%s]: %w", op, serviceName, derr)
+			return nil, pkgerrors.Wrapf(derr, "%s instances [%s]", op, serviceName)
 		}
 
 		if cacheWrite {

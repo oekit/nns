@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
+	pkgerrors "github.com/oekit/pkg/errors"
 )
 
 // LocalServiceInit 初始化本地服务，从 Nacos 配置中心拉取服务配置。
@@ -98,14 +98,14 @@ func (c *ServiceClient) LoadDepService(ctx context.Context, serviceNames []strin
 
 		content, err := c.configStore.GetConfig(ctx, sn, c.configGroup)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("get config [%s]: %w", sn, err))
+			errs = append(errs, pkgerrors.Wrapf(err, "get config [%s]", sn))
 			pending[sn] = dep
 			continue
 		}
 
 		if content != "" {
 			if err := json.Unmarshal([]byte(content), dep); err != nil {
-				errs = append(errs, fmt.Errorf("unmarshal config [%s]: %w", sn, err))
+				errs = append(errs, pkgerrors.Wrapf(err, "unmarshal config [%s]", sn))
 			}
 		}
 
@@ -209,7 +209,7 @@ func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) er
 		select {
 		case <-call.done:
 			if call.err != nil {
-				return fmt.Errorf("listen config [%s]: %w", serviceName, call.err)
+				return pkgerrors.Wrapf(call.err, "listen config [%s]", serviceName)
 			}
 			return nil
 		case <-ctx.Done():
@@ -388,7 +388,7 @@ func (c *ServiceClient) UnwatchService(ctx context.Context, serviceName string) 
 				c.watchedServices[serviceName] = true
 			}
 			c.mu.Unlock()
-			return fmt.Errorf("stop listen config [%s]: %w", serviceName, err)
+			return pkgerrors.Wrapf(err, "stop listen config [%s]", serviceName)
 		}
 		return nil
 	}
