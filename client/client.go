@@ -274,20 +274,6 @@ type ConfigChangeHandle struct {
 	fn func(serviceName string)
 }
 
-// subscribeCall 是一次「向 provider 注册 SDK 监听」的进行中状态。
-//
-// done 关闭即表示该次注册**已有结果**（成功或失败）；等待者醒来后重新决策
-// （读 subscribedServices / subscribing），而不是直接照抄结论。
-//
-// err 承载该次注册的结果（#211）：watchRegister 在 close(done) **之前**写入，
-// 等待者在 <-done 之后读取——channel 关闭建立 happens-before，无数据竞争。
-// 仅配置监听注册路径（watchRegister → WatchService 等待者）读写；实例订阅
-// /退订在途槽不用该字段（其结果经状态位重新决策）。
-type subscribeCall struct {
-	done chan struct{}
-	err  error
-}
-
 // defaultCacheExpiry 是实例缓存过期时间的缺省值，与门面 nns.New 的缺省口径
 // 一致（nns#94）：cacheExpiry 零值不表示「禁用过期」——time.Since 恒大于 0
 // 会让 Discover 容错链第 3 级「新鲜缓存」写入即过期、每次直通注册中心，
