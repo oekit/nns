@@ -9,9 +9,10 @@ import (
 )
 
 // TestStaticInstances_ZeroWeightBackfilled 回归（#61）：静态实例权重
-// 漏配/零值/负值按注册侧口径（registry.Apply / registry.InfoFrom 的
-// defaultWeight=10）回填默认权重——kitex weighted_balancer 对 weight<=0
-// 整只跳过，不回填会静默变成「无可用实例」。四个入库点全覆盖。
+// 漏配/零值/负值回填 registry.DefaultInstanceWeight（注册侧
+// registry.Apply / registry.InfoFrom 同口径单源常量）——kitex
+// weighted_balancer 对 weight<=0 整只跳过，不回填会静默变成
+// 「无可用实例」。四个入库点全覆盖。
 func TestStaticInstances_ZeroWeightBackfilled(t *testing.T) {
 	tests := []struct {
 		name string
@@ -95,8 +96,8 @@ func TestStaticInstances_ZeroWeightBackfilled(t *testing.T) {
 				t.Fatal("expected instances, got none")
 			}
 			for i, inst := range got {
-				if inst.Weight != defaultStaticWeight {
-					t.Errorf("instance[%d].Weight = %v, want %v", i, inst.Weight, defaultStaticWeight)
+				if inst.Weight != registry.DefaultInstanceWeight {
+					t.Errorf("instance[%d].Weight = %v, want %v", i, inst.Weight, registry.DefaultInstanceWeight)
 				}
 			}
 		})
@@ -129,8 +130,8 @@ func TestStaticInstances_ExplicitWeightPreserved(t *testing.T) {
 }
 
 // TestStaticInstances_OmittedWeightStillUsable 回归（#61）：配置只写
-// IP/Port、漏配权重字段时，实例不再是「无可用实例」——权重回填为默认 10，
-// 对下游加权均衡（weight<=0 整只跳过）可见可用。
+// IP/Port、漏配权重字段时，实例不再是「无可用实例」——权重回填为
+// registry.DefaultInstanceWeight，对下游加权均衡（weight<=0 整只跳过）可见可用。
 func TestStaticInstances_OmittedWeightStillUsable(t *testing.T) {
 	c := newTestClient(t, WithStaticInstances("svc", []registry.Instance{
 		{IP: "10.0.0.1", Port: 8080},
