@@ -1,3 +1,9 @@
+## [v0.9.4] — 2026-11-19
+
+- - refactor: 客户端常量接 registry 单源——WithConfigGroup 空回填的 "DEFAULT_GROUP" 裸字面量改 registry.DefaultGroup；删除私有常量 defaultStaticWeight=10，normalizeStaticInstances 静态实例回填改 registry.DefaultInstanceWeight（#214 收口在 nns 侧的漏网，此前靠 6 处注释互指对齐，registry 侧调值会静默分叉）（#237）
+
+关联问题单：nns#237。
+
 ## [v0.9.3] — 2026-11-18
 
 - client 实例订阅与配置监听两套在途握手状态机单源 inflightMachine——先摘槽再 close(done)、err 先于 close、让位防死锁(#152/#173)协议逐条保持(#227)
