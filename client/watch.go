@@ -259,7 +259,8 @@ func (c *ServiceClient) rollbackEntryLocked(serviceName string, entry *instanceC
 func (c *ServiceClient) newDispatch(serviceName string) func([]registry.Instance) {
 	return func(instances []registry.Instance) {
 		// 发布缓存快照（updateCache 内部一次深拷贝，与 provider 推送的
-		// 私有内存解耦——上游复用缓冲不再可能腐蚀缓存，#149）
+		// 私有内存解耦——上游复用缓冲不再可能腐蚀缓存，#149；漏配权重
+		// 的回填同在该发布点完成，#243）
 		c.updateCache(serviceName, instances)
 
 		// 派发快照：回调拿到的是拷贝（与 provider 内存解耦），避免 provider
