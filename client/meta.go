@@ -192,6 +192,9 @@ func (c *ServiceClient) GetServiceBasic(serviceName string) metadata.ServiceBasi
 
 // GetLocalColor 获取本地服务的灰度标识颜色。
 // 颜色来自本地服务元数据，可通过 SetLocalServiceMeta 设置。
+//
+// 当前无消费方（#243）：灰度路由未实现，设置 color 不会产生路由效果——
+// 仅作本地灰度标识的读取口，请勿将其当作路由开关依赖。
 func (c *ServiceClient) GetLocalColor() string {
 	meta := c.localServiceMeta.Load()
 	if meta == nil {
