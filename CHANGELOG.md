@@ -1,3 +1,9 @@
+## [v0.10.0] — 2026-11-20
+
+- fix(client): 缓存发布点权重归一——updateCache 与 watch 推送对 Weight<=0 回填 registry.DefaultInstanceWeight=10（对齐静态入口 normalizeStaticInstances 口径，提取共用 helper）；此前漏配权重实例到 nns-endpoint/httpx 消费面按 1 处理、kitex/hertz 按 10，混合栈流量分布不一致（#243）
+docs(client): GetLocalColor godoc 标注当前无消费方、灰度路由未实现（#243）
+⚠ 行为面：provider 推送的 0/负权重实例在缓存快照中现为 10（此前透传 0）；如依赖「0 权重=摘流」语义请直接移除实例（kitex weighted_balancer 对 <=0 整只跳过，回填前漏配即静默无实例）
+
 ## [v0.9.4] — 2026-11-19
 
 - - refactor: 客户端常量接 registry 单源——WithConfigGroup 空回填的 "DEFAULT_GROUP" 裸字面量改 registry.DefaultGroup；删除私有常量 defaultStaticWeight=10，normalizeStaticInstances 静态实例回填改 registry.DefaultInstanceWeight（#214 收口在 nns 侧的漏网，此前靠 6 处注释互指对齐，registry 侧调值会静默分叉）（#237）
