@@ -132,7 +132,11 @@ func (c *ServiceClient) resolveInstances(
 	if c.discoverer == nil {
 		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
 			nnsLog.Warn("no discoverer available, falling back to stale cache", "service", serviceName)
-			return cached, nil
+			// #251：stale 缓存可能是「非 nil 空快照」（注册中心曾返回空列表，
+			// updateCache 原样发布）——空视图按无实例进入兜底链，与第 3 级
+			// 新鲜缓存路径同口径；否则已配置的 WithStaticFallback 会在这条
+			// 最需要它的降级路径上被跳过。
+			return c.withStaticFallback(serviceName, cached), nil
 		}
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
 			return fb, nil
@@ -172,7 +176,11 @@ func (c *ServiceClient) resolveInstances(
 		// 这正是 godoc 第 5 条承诺的弹性语义
 		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
 			nnsLog.Warn(op+" failed, falling back to stale cache", "service", serviceName, logx.ErrKey, err)
-			return cached, nil
+			// #251：空 stale 快照（注册中心先返回空、随后故障）按无实例
+			// 进入兜底链——此前只判 cached != nil 就返回空列表 + nil
+			// error，跳过已配置的静态兜底，同一配置在缓存过期前后表现
+			// 不一致（新鲜缓存路径恒过 withStaticFallback）。
+			return c.withStaticFallback(serviceName, cached), nil
 		}
 		// 6. 兜底静态实例（注册中心不可用且无缓存可用）
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
