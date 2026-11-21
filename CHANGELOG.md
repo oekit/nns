@@ -1,3 +1,9 @@
+## [v0.10.1] — 2026-11-21
+
+- - fix: 降级分支空 stale 快照统一进入静态兜底——注册中心先返回空（非 nil 空切片）后再故障时 WithStaticFallback 不再失效（#251）
+
+关联问题单：nns#251。
+
 ## [v0.10.0] — 2026-11-20
 
 - fix(client): 缓存发布点权重归一——updateCache 与 watch 推送对 Weight<=0 回填 registry.DefaultInstanceWeight=10（对齐静态入口 normalizeStaticInstances 口径，提取共用 helper）；此前漏配权重实例到 nns-endpoint/httpx 消费面按 1 处理、kitex/hertz 按 10，混合栈流量分布不一致（#243）
