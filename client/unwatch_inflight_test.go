@@ -108,7 +108,9 @@ func TestUnwatchService_WaitsInflightListenConfig(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. WatchService：去重标记置位，goroutine 卡在 ListenConfig（注册在途）。
-	c.WatchService(ctx, "dep-a")
+	// #211 起 WatchService 等注册出结果再返回（在途窗口对调用方不可见），
+	// 后台起调以保留「注册在途」窗口本身——窗口由 listenEntered 观测。
+	go func() { _ = c.WatchService(ctx, "dep-a") }()
 	select {
 	case <-store.listenEntered:
 	case <-time.After(2 * time.Second):
@@ -166,7 +168,8 @@ func TestUnwatchService_WaitsInflightListenConfig_StopFailureRollback(t *testing
 	c := newTestClient(t, WithConfigStore(store))
 	ctx := context.Background()
 
-	c.WatchService(ctx, "dep-a")
+	// #211：WatchService 等注册出结果再返回，后台起调让注册先行落地。
+	go func() { _ = c.WatchService(ctx, "dep-a") }()
 	<-store.listenEntered
 	close(store.listenRelease)
 
@@ -209,8 +212,8 @@ func TestWatchService_WaitsInflightUnwatch(t *testing.T) {
 	c := newTestClient(t, WithConfigStore(store))
 	ctx := context.Background()
 
-	// 1. 首次监听完整落地。
-	c.WatchService(ctx, "dep-a")
+	// 1. 首次监听完整落地（#211：WatchService 等注册出结果，后台起调）。
+	go func() { _ = c.WatchService(ctx, "dep-a") }()
 	<-store.listenEntered
 	close(store.listenRelease)
 	waitListeningCount(t, store, "dep-a", "DEFAULT_GROUP", 1)

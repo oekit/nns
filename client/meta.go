@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -88,12 +88,12 @@ func (c *ServiceClient) localServiceConfigOrDefault(serviceName string) metadata
 func (c *ServiceClient) fetchServiceConfig(ctx context.Context, serviceName string) (metadata.ServiceBasic, error) {
 	content, err := c.configStore.GetConfig(ctx, serviceName, c.configGroup)
 	if err != nil {
-		return metadata.ServiceBasic{}, fmt.Errorf("get service config [%s]: %w", serviceName, err)
+		return metadata.ServiceBasic{}, pkgerrors.Wrapf(err, "get service config [%s]", serviceName)
 	}
 	basic := metadata.NewServiceBasic()
 	if content != "" {
 		if err := json.Unmarshal([]byte(content), basic); err != nil {
-			return metadata.ServiceBasic{}, fmt.Errorf("unmarshal service config [%s]: %w", serviceName, err)
+			return metadata.ServiceBasic{}, pkgerrors.Wrapf(err, "unmarshal service config [%s]", serviceName)
 		}
 	}
 	c.BindServiceBasic(serviceName, basic)
@@ -192,6 +192,9 @@ func (c *ServiceClient) GetServiceBasic(serviceName string) metadata.ServiceBasi
 
 // GetLocalColor 获取本地服务的灰度标识颜色。
 // 颜色来自本地服务元数据，可通过 SetLocalServiceMeta 设置。
+//
+// 当前无消费方（#243）：灰度路由未实现，设置 color 不会产生路由效果——
+// 仅作本地灰度标识的读取口，请勿将其当作路由开关依赖。
 func (c *ServiceClient) GetLocalColor() string {
 	meta := c.localServiceMeta.Load()
 	if meta == nil {

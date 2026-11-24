@@ -2,12 +2,12 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"maps"
 	"slices"
 	"time"
 
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -132,12 +132,16 @@ func (c *ServiceClient) resolveInstances(
 	if c.discoverer == nil {
 		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
 			nnsLog.Warn("no discoverer available, falling back to stale cache", "service", serviceName)
-			return cached, nil
+			// #251：stale 缓存可能是「非 nil 空快照」（注册中心曾返回空列表，
+			// updateCache 原样发布）——空视图按无实例进入兜底链，与第 3 级
+			// 新鲜缓存路径同口径；否则已配置的 WithStaticFallback 会在这条
+			// 最需要它的降级路径上被跳过。
+			return c.withStaticFallback(serviceName, cached), nil
 		}
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
 			return fb, nil
 		}
-		return nil, fmt.Errorf("no discoverer available and no cached or fallback instances for [%s]", serviceName)
+		return nil, pkgerrors.Newf("no discoverer available and no cached or fallback instances for [%s]", serviceName)
 	}
 
 	// 5. 从注册中心获取（singleflight 保护并发）
@@ -156,7 +160,7 @@ func (c *ServiceClient) resolveInstances(
 
 		rawInstances, derr := discover(ctx, serviceName)
 		if derr != nil {
-			return nil, fmt.Errorf("%s instances [%s]: %w", op, serviceName, derr)
+			return nil, pkgerrors.Wrapf(derr, "%s instances [%s]", op, serviceName)
 		}
 
 		if cacheWrite {
@@ -172,7 +176,11 @@ func (c *ServiceClient) resolveInstances(
 		// 这正是 godoc 第 5 条承诺的弹性语义
 		if cached := c.getStaleInstancesFromCache(serviceName); cached != nil {
 			nnsLog.Warn(op+" failed, falling back to stale cache", "service", serviceName, logx.ErrKey, err)
-			return cached, nil
+			// #251：空 stale 快照（注册中心先返回空、随后故障）按无实例
+			// 进入兜底链——此前只判 cached != nil 就返回空列表 + nil
+			// error，跳过已配置的静态兜底，同一配置在缓存过期前后表现
+			// 不一致（新鲜缓存路径恒过 withStaticFallback）。
+			return c.withStaticFallback(serviceName, cached), nil
 		}
 		// 6. 兜底静态实例（注册中心不可用且无缓存可用）
 		if fb := c.staticFallbackPool(serviceName); len(fb) > 0 {
@@ -236,26 +244,32 @@ func (c *ServiceClient) cacheLookup(serviceName string, ignoreExpiry bool) []reg
 	return instances
 }
 
-// defaultStaticWeight 是静态实例的默认权重，与注册侧口径一致：
-// registry.Apply 的 RegisterOption.Weight 默认 10，registry.InfoFrom 对
-// weight<=0 回退 defaultWeight（注册侧传入同为 10）。
-const defaultStaticWeight = 10
-
-// normalizeStaticInstances 归一化静态实例列表：拷贝入参（避免调用方后续
-// 修改污染内部静态表），并对 Weight<=0 的实例回填 defaultStaticWeight。
+// normalizeInstanceWeights 原地归一化实例权重：Weight<=0 的实例回填
+// registry.DefaultInstanceWeight（单源 helper——静态/动态实例入口同源
+// 同口径，#243）。
 //
-// 与注册侧对称（registry.Apply / registry.InfoFrom 的 defaultWeight=10）：
-// 静态配置漏写权重字段不等于「摘流」——kitex 加权均衡（weighted_balancer）
-// 对 weight<=0 的实例整只跳过，不回填会让「漏配一个字段」静默变成
-// 「无可用实例」。静态实例入口不提供「零权重 = drain」语义，需要摘流
-// 请直接移除实例。
-func normalizeStaticInstances(instances []registry.Instance) []registry.Instance {
-	result := copyInstances(instances)
-	for i := range result {
-		if result[i].Weight <= 0 {
-			result[i].Weight = defaultStaticWeight
+// 回填值取 registry 单源常量（注册侧 registry.Apply / registry.InfoFrom
+// 对漏配权重同样回退该值，口径一致）：漏配权重字段不等于「摘流」——
+// kitex 加权均衡（weighted_balancer）对 weight<=0 的实例整只跳过，
+// 不回填会让「漏配一个字段」静默变成「无可用实例」。实例入口不提供
+// 「零权重 = drain」语义，需要摘流请直接移除实例。
+//
+// 只能在**本包拥有的私有副本**上调用（copyInstances 产物或内部静态表）
+// ——入参若是 provider/调用方拥有的可变内存，原地改写违反快照契约（#149）。
+func normalizeInstanceWeights(instances []registry.Instance) {
+	for i := range instances {
+		if instances[i].Weight <= 0 {
+			instances[i].Weight = registry.DefaultInstanceWeight
 		}
 	}
+}
+
+// normalizeStaticInstances 归一化静态实例列表：拷贝入参（避免调用方后续
+// 修改污染内部静态表），并对 Weight<=0 的实例回填 registry.DefaultInstanceWeight
+// （normalizeInstanceWeights；#243 起动态发布入口 updateCache 同源同口径）。
+func normalizeStaticInstances(instances []registry.Instance) []registry.Instance {
+	result := copyInstances(instances)
+	normalizeInstanceWeights(result)
 	return result
 }
 
@@ -277,8 +291,19 @@ func copyInstances(instances []registry.Instance) []registry.Instance {
 // 发布时一次深拷贝（与 provider 推送 / Discover 结果的私有内存解耦——
 // 上游复用缓冲不再可能腐蚀缓存），整体替换旧条目（RCU，#149）：已发出的
 // 旧快照引用不受影响，读路径拿到的是不再被本包改写的只读数据。
+//
+// 权重归一（#243）：在拷贝出的私有副本上对 Weight<=0 回填
+// registry.DefaultInstanceWeight，与静态入口 normalizeStaticInstances 同源
+// （normalizeInstanceWeights）。Discover 与 watch 推送两条动态入口都经本
+// 发布点进缓存，而缓存是 httpx/nns-endpoint 与 kitex/hertz（经
+// sdbridge.WeightOrDefault）混合栈的共同实例面：漏配权重的动态实例若不
+// 归一，两类消费面对同一实例分别按 1 / 10 计权，混合栈流量分布不一致；
+// 归一理由与静态入口相同（kitex weighted_balancer 对 weight<=0 整只跳过）。
+// 归一在拷贝之后、发布之前进行——provider/调用方拥有的入参缓冲不被改写，
+// 已发布快照此后恒定（#149）。
 func (c *ServiceClient) updateCache(serviceName string, instances []registry.Instance) []registry.Instance {
 	snap := copyInstances(instances)
+	normalizeInstanceWeights(snap) // #243：发布点权重归一，与静态入口同口径
 
 	c.cacheMu.Lock()
 	defer c.cacheMu.Unlock()

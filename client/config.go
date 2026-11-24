@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"github.com/oekit/concurrency/async"
 	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
+	pkgerrors "github.com/oekit/pkg/errors"
 )
 
 // LocalServiceInit 初始化本地服务，从 Nacos 配置中心拉取服务配置。
@@ -61,7 +61,10 @@ func (c *ServiceClient) LocalServiceInit(ctx context.Context, serviceName string
 	c.localService = basic
 	c.mu.Unlock()
 
-	nnsLog.Info("local service initialized", "service", basic)
+	// "service" 字段在本包的既定语义是服务名字符串（同文件其余日志同口径）；
+	// 此前这里塞了 *ServiceBasic 结构体指针，结构化管道按 service 字段
+	// 聚类/索引时读到一个 JSON 对象而非字符串，无法按服务名归档（#213）。
+	nnsLog.Info("local service initialized", "service", serviceName)
 	return basic, nil
 }
 
@@ -95,14 +98,14 @@ func (c *ServiceClient) LoadDepService(ctx context.Context, serviceNames []strin
 
 		content, err := c.configStore.GetConfig(ctx, sn, c.configGroup)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("get config [%s]: %w", sn, err))
+			errs = append(errs, pkgerrors.Wrapf(err, "get config [%s]", sn))
 			pending[sn] = dep
 			continue
 		}
 
 		if content != "" {
 			if err := json.Unmarshal([]byte(content), dep); err != nil {
-				errs = append(errs, fmt.Errorf("unmarshal config [%s]: %w", sn, err))
+				errs = append(errs, pkgerrors.Wrapf(err, "unmarshal config [%s]", sn))
 			}
 		}
 
@@ -121,8 +124,21 @@ func (c *ServiceClient) LoadDepService(ctx context.Context, serviceNames []strin
 	return errors.Join(errs...)
 }
 
-// WatchService 监听指定服务的配置变更。
+// WatchService 监听指定服务的配置变更，返回本次监听注册的结果（#211）。
 // 内部做去重：同一 serviceName 只注册一次监听。
+//
+// 返回值语义：
+//   - 监听已落地（含此前已在监听的幂等路径）：nil；
+//   - ListenConfig 注册失败：包装了服务名的错误——去重标记已回滚，可直接
+//     重试本方法（与 UnwatchService 失败上抛同口径）；
+//   - 等待期间 ctx 取消：ctx.Err()（后台注册可能仍会落地，结果不再回传）；
+//   - Mock 模式 / 未注入 ConfigStore / Close 后：幂等 no-op，nil。
+//
+// 等待语义（#211）：注册仍在后台 goroutine 落地（#170 的在途交接语义不变
+// ——UnwatchService/Close 照旧等在途槽出结果），本方法等到该次注册出结果
+// 再返回：调用方在返回时刻即可判定热更挂没挂上，不再只能从一条 Warn 里猜
+// （此前 void 返回 + 仅 Warn，启动「成功」而热更静默失效）。等待只挂在调用
+// 方 goroutine 上，不持锁、不改热更回调路径，预算由调用方 ctx 约束。
 //
 // 在途可见性（#170）：去重标记与在途登记槽（watching）同帧发布——从标记
 // 置位起整个注册期（含 ListenConfig 异步落地之前）对 UnwatchService/Close
@@ -131,59 +147,77 @@ func (c *ServiceClient) LoadDepService(ctx context.Context, serviceNames []strin
 // 本方法先等退订出结果再登记——否则本方监听落地后可能被在途退订按 dataId
 // 一并拆除，而本地标记已置位 ⇒ 永不重注册 ⇒ 热更静默失联（与 ensureSubscribe
 // 等待 unsubscribing 同构）。
-func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) {
+func (c *ServiceClient) WatchService(ctx context.Context, serviceName string) error {
 	if c.mockMode || c.configStore == nil {
-		return
+		return nil
 	}
 
+	watchInflight := c.watchInflight()
 	for {
 		c.mu.Lock()
 		// Close 后（终结语义）直接 no-op：不标记，否则残留去重标记
 		if c.closed.Load() {
 			c.mu.Unlock()
-			return
+			return nil
 		}
 		// #170：有在途退订 ⇒ 等它出结果再登记（不持锁等待）。醒来后重新
 		// 决策：退订可能已把标记摘除（本方重新登记）或已回滚（幂等重入）。
-		// ctx 取消时直接返回——未登记、未注册，调用方按 WatchService 无
-		// 返回值语义视作未监听。
-		if ucall, ok := c.unwatching[serviceName]; ok {
+		// ctx 取消时直接返回——未登记、未注册，调用方按未监听处理。
+		if ucall, ok := watchInflight.inflightLocked(inflightReverse, serviceName); ok {
 			c.mu.Unlock()
-			select {
-			case <-ucall.done:
-			case <-ctx.Done():
-				return
+			if err := awaitSlot(ctx, ucall); err != nil {
+				return err
 			}
 			continue
 		}
 		if c.watchedServices[serviceName] {
+			// 已在监听：有他方在途注册则等它出结果再决策（#211——失败的
+			// 注册已回滚标记，醒来后本方接手重试，与 ensureSubscribe 等待
+			// 在途注册同构；直接返回 nil 会在「前一个注册失败」时谎报成功）。
+			if call, ok := watchInflight.inflightLocked(inflightForward, serviceName); ok {
+				c.mu.Unlock()
+				if err := awaitSlot(ctx, call); err != nil {
+					return err
+				}
+				continue
+			}
 			c.mu.Unlock()
-			return
+			return nil
 		}
 		if c.watchedServices == nil {
 			c.watchedServices = make(map[string]bool)
 		}
 		c.watchedServices[serviceName] = true
 		// #170：在途登记槽与去重标记同帧发布，注册全程对退订/Close 可见。
-		call := &subscribeCall{done: make(chan struct{})}
-		if c.watching == nil {
-			c.watching = make(map[string]*subscribeCall)
-		}
-		c.watching[serviceName] = call
+		call := watchInflight.claimLocked(inflightForward, serviceName)
 		c.mu.Unlock()
 
 		async.GoSafe(func() {
 			c.watchRegister(ctx, serviceName, call)
 		})
-		return
+
+		// #211：等本次注册出结果再返回——热更挂没挂上在返回时刻可判定。
+		// 注册本体仍在后台落地（不持锁、不改在途交接语义），这里只等结果；
+		// ctx 取消即返回，后台注册随后照常完成或失败（标记随之回滚）。
+		select {
+		case <-call.done:
+			if call.err != nil {
+				return pkgerrors.Wrapf(call.err, "listen config [%s]", serviceName)
+			}
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
 // watchRegister 是 WatchService 后台注册 goroutine 的主体（#170 自
-// WatchService 拆出）：ListenConfig 落地 → 失败回滚去重标记；成功后补偿
-// 复查（closed **或已被 Unwatch**——标记被摘 ⇒ 取消先于本注册落地成了
-// no-op，立即补一次 StopListenConfig 把竞态窗口收到「注册+补偿」内部）；
-// 收场先摘在途槽再唤醒等待者（等待者看到「已出结果」终态再决策）。
+// WatchService 拆出）：ListenConfig 落地 → 失败回滚去重标记并把错误按
+// 「err 先于 close(done)」协议写进在途槽（inflightMachine.fail，#211/#227，
+// 供等待中的 WatchService 上抛）；成功后补偿复查（closed **或已被 Unwatch**
+// ——标记被摘 ⇒ 取消先于本注册落地成了 no-op，立即补一次 StopListenConfig
+// 把竞态窗口收到「注册+补偿」内部）；收场先摘在途槽再唤醒等待者
+// （inflightMachine.release——等待者看到「已出结果」终态再决策）。
 func (c *ServiceClient) watchRegister(ctx context.Context, serviceName string, call *subscribeCall) {
 	// 注册前复查 closed：Close 可能在去重标记之后、goroutine 执行之前
 	// 完成快照——此时直接注册会泄漏监听器（无人再 Cancel）
@@ -191,7 +225,7 @@ func (c *ServiceClient) watchRegister(ctx context.Context, serviceName string, c
 	closedBeforeRegister := c.closed.Load()
 	c.mu.RUnlock()
 	if closedBeforeRegister {
-		c.finishWatching(serviceName, call)
+		c.watchInflight().release(inflightForward, serviceName, call)
 		return
 	}
 
@@ -235,7 +269,9 @@ func (c *ServiceClient) watchRegister(ctx context.Context, serviceName string, c
 		c.mu.Lock()
 		delete(c.watchedServices, serviceName)
 		c.mu.Unlock()
-		c.finishWatching(serviceName, call)
+		// #211：结果先于 close(done) 公布——等待中的 WatchService 据此上抛
+		// （inflightMachine.fail 的协议次序，#227 单源）。
+		c.watchInflight().fail(inflightForward, serviceName, call, err)
 		nnsLog.Warn("listen service config failed", "service", serviceName, logx.ErrKey, err)
 		return
 	}
@@ -254,19 +290,7 @@ func (c *ServiceClient) watchRegister(ctx context.Context, serviceName string, c
 		}
 	}
 
-	c.finishWatching(serviceName, call)
-}
-
-// finishWatching 摘除在途登记槽并唤醒等待者（#170）：先摘标记再 close(done)
-// ——等待者醒来看到的是「注册已出结果、槽已收场」的终态。身份核验摘除
-// （槽若已被并发 WatchService 重新登记则不动他方）。
-func (c *ServiceClient) finishWatching(serviceName string, call *subscribeCall) {
-	c.mu.Lock()
-	if cur, ok := c.watching[serviceName]; ok && cur == call {
-		delete(c.watching, serviceName)
-	}
-	c.mu.Unlock()
-	close(call.done)
+	c.watchInflight().release(inflightForward, serviceName, call)
 }
 
 // UnwatchService 取消指定服务的配置监听（WatchService 的对称退订入口，
@@ -285,71 +309,40 @@ func (c *ServiceClient) finishWatching(serviceName string, call *subscribeCall) 
 // 取消确定地落在注册落地**之后**），保证返回时监听已回收；落地失败的注册
 // （标记已回滚）按未监听幂等 no-op。并发多次 Unwatch 收敛：后来者等首次
 // 退订出结果后按「未监听」重入（对 provider 幂等）。
+//
+// 循环骨架（双向在途等待与收场次序）单源到 inflightMachine.runUnregister
+// （#227）；配置侧差异经钩子注入：未监听过幂等 no-op（unmarked）、失败
+// 条件回滚去重标记（onFailure）、错误点名服务（invoke 内包装）。
 func (c *ServiceClient) UnwatchService(ctx context.Context, serviceName string) error {
 	if c.mockMode || c.configStore == nil {
 		return nil
 	}
-
-	for {
-		c.mu.Lock()
-		// #170：等在途注册落地——StopListenConfig 先于 ListenConfig 落地
-		// 是 no-op，监听随后落地成孤儿：再次 Unwatch 因标记已摘而 no-op、
-		// Close 的取消清单来自快照同样不含它。等待后按落地结果决策。
-		if call, ok := c.watching[serviceName]; ok {
-			c.mu.Unlock()
-			select {
-			case <-call.done:
-			case <-ctx.Done():
-				return ctx.Err()
+	return c.watchInflight().runUnregister(ctx, serviceName, unregisterHooks{
+		unmarked: func(key string) bool {
+			// 未监听过的服务：幂等 no-op（返回 nil）。
+			return !c.watchedServices[key]
+		},
+		onClaimed: func(key string) {
+			// 摘除去重标记（与退订槽登记同帧）。
+			delete(c.watchedServices, key)
+		},
+		invoke: func(ctx context.Context, key string) error {
+			if err := c.configStore.StopListenConfig(ctx, key, c.configGroup); err != nil {
+				return pkgerrors.Wrapf(err, "stop listen config [%s]", key)
 			}
-			continue
-		}
-		// 已有在途退订 ⇒ 等它出结果（并发退订去重到单个 provider 调用）。
-		if ucall, ok := c.unwatching[serviceName]; ok {
-			c.mu.Unlock()
-			select {
-			case <-ucall.done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			continue
-		}
-		if !c.watchedServices[serviceName] {
-			c.mu.Unlock()
 			return nil
-		}
-		ucall := &subscribeCall{done: make(chan struct{})}
-		if c.unwatching == nil {
-			c.unwatching = make(map[string]*subscribeCall)
-		}
-		c.unwatching[serviceName] = ucall
-		delete(c.watchedServices, serviceName)
-		c.mu.Unlock()
-
-		err := c.configStore.StopListenConfig(ctx, serviceName, c.configGroup)
-
-		// 先摘标记再唤醒等待者：并发 WatchService 醒来后按「退订已出结果、
-		// 本地干净」的终态重新决策（与 unsubscribing 收场次序同口径）。
-		c.mu.Lock()
-		if cur, ok := c.unwatching[serviceName]; ok && cur == ucall {
-			delete(c.unwatching, serviceName)
-		}
-		c.mu.Unlock()
-		close(ucall.done)
-
-		if err != nil {
+		},
+		onFailure: func(key string) {
 			// 失败回滚去重标记：与 WatchService 注册失败的回滚同口径，
 			// 允许重试 UnwatchService。不覆盖他人的新标记——唤醒的并发
 			// WatchService 可能在回滚前已重新登记（标记在位即不动）。
 			c.mu.Lock()
-			if !c.watchedServices[serviceName] {
-				c.watchedServices[serviceName] = true
+			if !c.watchedServices[key] {
+				c.watchedServices[key] = true
 			}
 			c.mu.Unlock()
-			return fmt.Errorf("stop listen config [%s]: %w", serviceName, err)
-		}
-		return nil
-	}
+		},
+	})
 }
 
 // safeInvoke 带 panic 隔离地执行用户回调：

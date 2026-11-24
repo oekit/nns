@@ -1,3 +1,45 @@
+## [v0.10.2] — 2026-11-23
+
+- build: 依赖地板对齐（矩阵地板波次）——新地板：github.com/oekit/pkg v0.60.0 。零行为变化；已发布产物的 go.mod 地板此前滞后于矩阵登记版本，本版把新地板焊进已发布产物。
+
+## [v0.10.1] — 2026-11-21
+
+- - fix: 降级分支空 stale 快照统一进入静态兜底——注册中心先返回空（非 nil 空切片）后再故障时 WithStaticFallback 不再失效（#251）
+
+关联问题单：nns#251。
+
+## [v0.10.0] — 2026-11-20
+
+- fix(client): 缓存发布点权重归一——updateCache 与 watch 推送对 Weight<=0 回填 registry.DefaultInstanceWeight=10（对齐静态入口 normalizeStaticInstances 口径，提取共用 helper）；此前漏配权重实例到 nns-endpoint/httpx 消费面按 1 处理、kitex/hertz 按 10，混合栈流量分布不一致（#243）
+docs(client): GetLocalColor godoc 标注当前无消费方、灰度路由未实现（#243）
+⚠ 行为面：provider 推送的 0/负权重实例在缓存快照中现为 10（此前透传 0）；如依赖「0 权重=摘流」语义请直接移除实例（kitex weighted_balancer 对 <=0 整只跳过，回填前漏配即静默无实例）
+
+## [v0.9.4] — 2026-11-19
+
+- - refactor: 客户端常量接 registry 单源——WithConfigGroup 空回填的 "DEFAULT_GROUP" 裸字面量改 registry.DefaultGroup；删除私有常量 defaultStaticWeight=10，normalizeStaticInstances 静态实例回填改 registry.DefaultInstanceWeight（#214 收口在 nns 侧的漏网，此前靠 6 处注释互指对齐，registry 侧调值会静默分叉）（#237）
+
+关联问题单：nns#237。
+
+## [v0.9.3] — 2026-11-18
+
+- client 实例订阅与配置监听两套在途握手状态机单源 inflightMachine——先摘槽再 close(done)、err 先于 close、让位防死锁(#152/#173)协议逐条保持(#227)
+
+关联问题单：nns#227。
+
+## [v0.9.2] — 2026-11-16
+
+- refactor: fmt.Errorf → oekit/pkg/errors 三形态对位替换（#520 替换波）+ 依赖地板抬至 pkg v0.52.0。文案逐字节同形（测试断言零修改），多 %w/%w 居中/哨兵前置形态按仓规保留
+
+## [v0.9.1] — 2026-11-15
+
+- 空 cfg.Group 不再原样透传（#209）：New 对空分组给缺省值，ListenConfig 不再收到空 group
+- appendNacosDefaults 失败路径收口（#210）：naming client 创建失败不再提前返回吞掉后续默认值
+- WatchService 补错误返回（#211）：ListenConfig 失败从仅 Warn 升为可感知错误，热更失败不再静默
+- buildInstance 校验 port 范围（#212）：0/负数/超 65535 在入口拒绝，不再直通 Ser
+- LocalServiceInit 收尾日志类型修正（#213）：*ServiceBasic 不再塞进 %s 占位
+
+关联问题单：nns#209、nns#210、nns#211、nns#212、nns#213。
+
 ## [v0.9.0] — 2026-11-13
 
 - **BREAKING**：删除 (*ServiceClient).GetRegistrar() 双访问器（#146 终局）——kitex/hertz 适配层已全迁 Registrar()。下游迁移：GetRegistrar() → Registrar()（完全等价）。地板随迁 pkg v0.48.0 / logx v0.11.0 / concurrency v0.36.0。

@@ -2,10 +2,10 @@ package client
 
 import (
 	"context"
-	"fmt"
 	"slices"
 
 	"github.com/oekit/logx"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -28,6 +28,7 @@ import (
 // provider 内存解耦的私有副本，初始回调是内部已发布快照的引用；两者均
 // 不得修改（快照契约见 GetInstances godoc）。
 func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string, callback func([]registry.Instance)) error {
+	subInflight := c.subscribeInflight()
 	c.callbackMu.Lock()
 	// Close 是终结操作：关闭后 SDK 客户端已 CloseClient，再向其注册监听
 	// 会残留无效订阅（与 WatchService 的 closed 检查对称）。
@@ -45,14 +46,7 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 	// 本调用收场时恰好一次关闭）；槽已被他方占用时本方是等待者（call 为
 	// nil，等待期间不持有槽），后续在 ensureSubscribe 里按在途结果重新
 	// 决策、接手时补登自己的槽。
-	var call *subscribeCall
-	if _, busy := c.subscribing[serviceName]; !busy {
-		call = &subscribeCall{done: make(chan struct{})}
-		if c.subscribing == nil {
-			c.subscribing = make(map[string]*subscribeCall)
-		}
-		c.subscribing[serviceName] = call
-	}
+	call, _ := subInflight.claimIfFreeLocked(inflightForward, serviceName)
 	// #165：扇出列表是 copy-on-write——追加也发布**全新切片**（full-slice
 	// 表达式强制 append 重分配 backing array），已发布切片永不再被原地
 	// 改写；推送扇出（newDispatch）在锁外遍历旧快照因此无数据竞争。
@@ -68,13 +62,13 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 		}
 		// 无 provider 注册段，槽到调用收场为止（在途可见性口径与真实
 		// 注册路径一致）
-		c.releaseSubscribeSlot(serviceName, call)
+		subInflight.release(inflightForward, serviceName, call)
 		return nil
 	}
 
 	slot, registered, err := c.ensureSubscribe(ctx, serviceName, entry, call)
 	if err != nil {
-		c.releaseSubscribeSlot(serviceName, slot)
+		subInflight.release(inflightForward, serviceName, slot)
 		return err
 	}
 	if !registered {
@@ -87,16 +81,16 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 			safeInvoke("instance", serviceName, func() { callback(instances) })
 		}
 	}
-	c.releaseSubscribeSlot(serviceName, slot)
+	subInflight.release(inflightForward, serviceName, slot)
 	return nil
 }
 
 // ensureSubscribe 确保 serviceName 的 SDK 监听已注册。
 //
 // 返回值：slot 是本调用在返回时刻持有的在途槽（收场由 SubscribeService
-// 统一 releaseSubscribeSlot——含去重路径的初始回调期，#173）；registered
-// 为 true 表示「本次调用把监听注册上了」，false 表示「监听此前已注册」
-// （调用方需自己补一次初始回调）。
+// 统一 release——inflightMachine.release，#227 单源——含去重路径的初始回调
+// 期，#173）；registered 为 true 表示「本次调用把监听注册上了」，false
+// 表示「监听此前已注册」（调用方需自己补一次初始回调）。
 //
 // **注册是串行的**：同一服务同一时刻只有一个注册方在途（c.subscribing
 // 记录在途槽），后到的并发订阅方等待在途注册的结果，而不是直接返回——
@@ -118,6 +112,7 @@ func (c *ServiceClient) SubscribeService(ctx context.Context, serviceName string
 // （等在途退订，见下）时关闭——等待者据此唤醒重新决策，UnsubscribeService
 // 据此等整个在途订阅出结果。
 func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string, entry *instanceCallback, call *subscribeCall) (*subscribeCall, bool, error) {
+	subInflight := c.subscribeInflight()
 	for {
 		c.callbackMu.Lock()
 		// #152：Close 是终结操作——关闭后不再向 provider 发起新注册（否则
@@ -148,47 +143,43 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		// 决策时槽位空缺则补登自己的槽，provider 侧次序必然是
 		// 退订落地 → 本方注册。原本停在本方 done 上的等待者同时被唤醒，
 		// 落到同一处退订等待，醒来后重新决策。
-		if ucall, ok := c.unsubscribing[serviceName]; ok {
-			c.releaseSubscribeSlotLocked(serviceName, call)
+		if ucall, ok := subInflight.inflightLocked(inflightReverse, serviceName); ok {
+			subInflight.releaseLocked(inflightForward, serviceName, call)
 			call = nil
 			c.callbackMu.Unlock()
-			select {
-			case <-ucall.done:
-				continue
-			case <-ctx.Done():
+			if err := awaitSlot(ctx, ucall); err != nil {
 				c.rollbackEntry(serviceName, entry)
-				return nil, false, ctx.Err()
+				return nil, false, err
 			}
+			continue
 		}
 		// 有在途注册（他方的槽）⇒ 等它的结果，醒来后重新决策。本方持有的
 		// 槽必然是 map 里那一个（他方只在槽空闲时登记），故 call != nil 时
 		// 不会进入本分支。
-		if inflight, ok := c.subscribing[serviceName]; ok && inflight != call {
+		if inflight, ok := subInflight.inflightLocked(inflightForward, serviceName); ok && inflight != call {
 			c.callbackMu.Unlock()
-			select {
-			case <-inflight.done:
-				// 在途注册已出结果：自己的 entry **留在扇出列表里**（#104），
-				// 回循环顶重新决策——注册成功则走去重路径（条目在，推送
-				// 扇出可达本回调）；失败则本方接手重试。此前 #95 修复把
-				// 摘除放在 select 之前无条件执行，成功醒来的等待者条目
-				// 已被摘且无人补回——并发订阅同一服务时后到者「订阅成功
-				// 但回调永不触发」。
-				continue
-			case <-ctx.Done():
-				// 只有 ctx 真正取消时才按指针身份回滚自己刚追加的 entry
-				// （#95）——与注册方失败路径的回滚同构；不摘的话注册一旦
-				// 成功，已「失败返回」的回调会收到后续所有 SDK 推送且永不
-				// 清理。（此刻在途注册可能恰好完成：照样摘，本调用方拿到
-				// 的是错误，不该再收推送。）
+			// 在途注册已出结果：自己的 entry **留在扇出列表里**（#104），
+			// 回循环顶重新决策——注册成功则走去重路径（条目在，推送
+			// 扇出可达本回调）；失败则本方接手重试。此前 #95 修复把
+			// 摘除放在 select 之前无条件执行，成功醒来的等待者条目
+			// 已被摘且无人补回——并发订阅同一服务时后到者「订阅成功
+			// 但回调永不触发」。
+			//
+			// 只有 ctx 真正取消时才按指针身份回滚自己刚追加的 entry
+			// （#95）——与注册方失败路径的回滚同构；不摘的话注册一旦
+			// 成功，已「失败返回」的回调会收到后续所有 SDK 推送且永不
+			// 清理。（此刻在途注册可能恰好完成：照样摘，本调用方拿到
+			// 的是错误，不该再收推送。）
+			if err := awaitSlot(ctx, inflight); err != nil {
 				c.rollbackEntry(serviceName, entry)
-				return call, false, ctx.Err()
+				return call, false, err
 			}
+			continue
 		}
 		// 本次调用成为注册方：槽已在位（SubscribeService 同帧抢占），或
 		// 空缺（#173 等待醒来让位后接手——补登自己的槽）。
 		if call == nil {
-			call = &subscribeCall{done: make(chan struct{})}
-			c.subscribing[serviceName] = call
+			call = subInflight.claimLocked(inflightForward, serviceName)
 		}
 		c.callbackMu.Unlock()
 
@@ -197,7 +188,7 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		// 公布结果：**先在锁内改状态，再唤醒等待者**——等待者醒来后要能看到
 		// 最终状态（已注册 / 未注册）才能正确决策；顺序反了它会读到中间态。
 		// #173：槽的摘除不在 commit 做——收场统一在 SubscribeService 返回时
-		// releaseSubscribeSlot（覆盖去重初始回调期），等待者按 done 关闭唤醒。
+		// release（覆盖去重初始回调期），等待者按 done 关闭唤醒。
 		compensate := false
 		c.callbackMu.Lock()
 		switch {
@@ -231,38 +222,10 @@ func (c *ServiceClient) ensureSubscribe(ctx context.Context, serviceName string,
 		}
 
 		if err != nil {
-			return call, false, fmt.Errorf("subscribe service [%s]: %w", serviceName, err)
+			return call, false, pkgerrors.Wrapf(err, "subscribe service [%s]", serviceName)
 		}
 		return call, true, nil
 	}
-}
-
-// releaseSubscribeSlot 收场本调用持有的在途槽（#173）：身份核验摘除（map
-// 里若已被他人接管则不动他方）+ close(done) 恰好一次。call==nil（本方是
-// 等待者、从未持有槽或已在退订等待中让位）为 no-op。
-func (c *ServiceClient) releaseSubscribeSlot(serviceName string, call *subscribeCall) {
-	if call == nil {
-		return
-	}
-	c.callbackMu.Lock()
-	if cur, ok := c.subscribing[serviceName]; ok && cur == call {
-		delete(c.subscribing, serviceName)
-	}
-	c.callbackMu.Unlock()
-	close(call.done)
-}
-
-// releaseSubscribeSlotLocked 是 releaseSubscribeSlot 的锁内版本（调用方
-// 必须已持有 callbackMu 写锁）：让位场景（等在途退订）在持锁状态下摘槽，
-// 与状态决策同帧发布。
-func (c *ServiceClient) releaseSubscribeSlotLocked(serviceName string, call *subscribeCall) {
-	if call == nil {
-		return
-	}
-	if cur, ok := c.subscribing[serviceName]; ok && cur == call {
-		delete(c.subscribing, serviceName)
-	}
-	close(call.done)
 }
 
 // rollbackEntry 按指针身份把 entry 从扇出列表摘除（自带锁）。
@@ -296,7 +259,8 @@ func (c *ServiceClient) rollbackEntryLocked(serviceName string, entry *instanceC
 func (c *ServiceClient) newDispatch(serviceName string) func([]registry.Instance) {
 	return func(instances []registry.Instance) {
 		// 发布缓存快照（updateCache 内部一次深拷贝，与 provider 推送的
-		// 私有内存解耦——上游复用缓冲不再可能腐蚀缓存，#149）
+		// 私有内存解耦——上游复用缓冲不再可能腐蚀缓存，#149；漏配权重
+		// 的回填同在该发布点完成，#243）
 		c.updateCache(serviceName, instances)
 
 		// 派发快照：回调拿到的是拷贝（与 provider 内存解耦），避免 provider
@@ -337,57 +301,26 @@ func (c *ServiceClient) newDispatch(serviceName string) func([]registry.Instance
 //
 // 并发多次 Unsubscribe 收敛：后来者等待首次退订结束后按「未订阅」状态
 // 重入（对 provider 幂等）。
+//
+// 循环骨架（双向在途等待与收场次序）单源到 inflightMachine.runUnregister
+// （#227）；实例侧差异经钩子注入：登记帧连扇出列表一并清理、mock / 无
+// 订阅器短路（invoke 内返回 nil，本地状态照常清理）、provider 失败错误
+// 原样上抛（无标记回滚——本地已清，下次 Subscribe 重新注册）。
 func (c *ServiceClient) UnsubscribeService(ctx context.Context, serviceName string) error {
-	for {
-		c.callbackMu.Lock()
-		// 等在途订阅出结果（#173：槽覆盖订阅调用全程）：否则「注册」与
-		// 「注销」在 provider 侧的先后不可控——注册可能落在注销之后 ⇒
-		// 监听残留/幽灵复活（本地标记已删，下次订阅会重复注册）。
-		if call, ok := c.subscribing[serviceName]; ok {
-			c.callbackMu.Unlock()
-			select {
-			case <-call.done:
-			case <-ctx.Done():
-				return ctx.Err()
+	return c.subscribeInflight().runUnregister(ctx, serviceName, unregisterHooks{
+		onClaimed: func(key string) {
+			// 本地回调列表同步清除（退订针对整个服务生效），避免再次
+			// Subscribe 后旧回调重复触发；已订阅标记一并摘除。
+			delete(c.instanceCallbacks, key)
+			delete(c.subscribedServices, key)
+		},
+		invoke: func(ctx context.Context, key string) error {
+			// Mock 模式或无订阅器：无 provider 退订可落地，但本地状态已在
+			// 登记帧清理完毕——照常走收场帧摘槽唤醒（对 provider 幂等）。
+			if c.mockMode || c.subscriber == nil {
+				return nil
 			}
-			continue
-		}
-		// 已有在途退订 ⇒ 等它结束（并发退订去重到单个 provider 调用）。
-		if ucall, ok := c.unsubscribing[serviceName]; ok {
-			c.callbackMu.Unlock()
-			select {
-			case <-ucall.done:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-			continue
-		}
-
-		ucall := &subscribeCall{done: make(chan struct{})}
-		if c.unsubscribing == nil {
-			c.unsubscribing = make(map[string]*subscribeCall)
-		}
-		c.unsubscribing[serviceName] = ucall
-		delete(c.instanceCallbacks, serviceName)
-		delete(c.subscribedServices, serviceName)
-		c.callbackMu.Unlock()
-
-		if c.mockMode || c.subscriber == nil {
-			c.callbackMu.Lock()
-			delete(c.unsubscribing, serviceName)
-			c.callbackMu.Unlock()
-			close(ucall.done)
-			return nil
-		}
-
-		err := c.subscriber.Unsubscribe(ctx, serviceName)
-
-		// 先摘标记再唤醒等待者：醒来者看到的是「退订已落地、本地干净」的
-		// 终态，接手注册即恢复监听（#147）。
-		c.callbackMu.Lock()
-		delete(c.unsubscribing, serviceName)
-		c.callbackMu.Unlock()
-		close(ucall.done)
-		return err
-	}
+			return c.subscriber.Unsubscribe(ctx, key)
+		},
+	})
 }

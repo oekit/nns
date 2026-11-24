@@ -2,9 +2,9 @@ package client
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/oekit/core/network"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -29,7 +29,7 @@ func (c *ServiceClient) Register(ctx context.Context, port int, opts ...registry
 	}
 	name := c.getSelfServiceName()
 	if name == "" {
-		return fmt.Errorf("nns/client: service name unknown; call Init/LocalServiceInit before Register")
+		return pkgerrors.New("nns/client: service name unknown; call Init/LocalServiceInit before Register")
 	}
 	return c.registerAs(ctx, name, port, opts...)
 }
@@ -191,13 +191,23 @@ func (c *ServiceClient) forgetRegistered(serviceName string, port int) {
 // buildInstance 构造注册实例：服务名与端口由调用方给出，IP 取本机
 // Pod IP，权重/元数据/分组/集群取自 opts。
 func (c *ServiceClient) buildInstance(serviceName string, port int, opts ...registry.RegisterOptionFunc) (registry.Instance, error) {
+	// #104 同门（#212）：端口是调用方参数——参数校验先于环境检查（与服务名
+	// 空值校验同序），1..65535 之外 fail-closed 拒绝并包 registry.ErrInvalidPort。
+	// 此前端口零校验：0/负端口经 nacosimpl 的 uint64 转换（registrar.go）
+	// 变成天文数字原样注册进 Nacos，消费方拨号必然失败且值已失去可读性；
+	// registry.ParseAddr 的 #104 端口门覆盖不到 Register 这条直传路径。
+	if port < 1 || port > 65535 {
+		return registry.Instance{}, pkgerrors.Wrapf(registry.ErrInvalidPort,
+			"nns/client: invalid port %d for %s (must be within 1..65535 to be dialable)",
+			port, serviceName)
+	}
 	opt := registry.Apply(opts...)
 	ip := network.GetPodIP()
 	// #68：注册路径拒绝回环地址——GetPodIP 的 127.0.0.1 静默回退（网卡枚举
 	// 失败）在注册消费链上必须显式失败：注册一个永远不可达的回环地址比注册
 	// 失败更坏（discover 拿到拨不通的实例，根因被彻底掩盖）。
 	if ip == "" || ip == "127.0.0.1" || ip == "::1" {
-		return registry.Instance{}, fmt.Errorf(
+		return registry.Instance{}, pkgerrors.Newf(
 			"nns/client: refusing to register loopback/empty Pod IP %q for %s (nic enumeration likely failed; set host ip explicitly)", ip, serviceName)
 	}
 	return registry.Instance{

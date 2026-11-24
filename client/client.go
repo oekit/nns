@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +10,7 @@ import (
 	"github.com/oekit/concurrency/singleflight"
 	"github.com/oekit/logx"
 	"github.com/oekit/nns/metadata"
+	pkgerrors "github.com/oekit/pkg/errors"
 	"github.com/oekit/registry"
 )
 
@@ -224,8 +224,19 @@ func WithConfigStore(s registry.ConfigStore) ClientOption {
 
 // WithConfigGroup 设置配置读取的分组（默认 provider 配置里的 group 概念，
 // 本包只把它当不透明字符串透传给 ConfigStore）。
+//
+// 空值回填 registry.DefaultGroup（#209 单源常量，与 registry/nacos
+// Bootstrap.GroupOrDefault 同口径——registry#51）：yaml 只写 nacos.addr
+// 不写 group 时，此前空串原样进入 ListenConfig，SDK 直接报
+// "Group can not be empty" 且被门面吞掉，配置热更静默失效
+// （GetConfig 空分组 SDK 侧有兜底，读路径侥幸正常）。
 func WithConfigGroup(group string) ClientOption {
-	return func(c *ServiceClient) { c.configGroup = group }
+	return func(c *ServiceClient) {
+		if group == "" {
+			group = registry.DefaultGroup
+		}
+		c.configGroup = group
+	}
 }
 
 // getSelfServiceName 读取 LocalServiceInit 记录的自身服务名。
@@ -262,14 +273,6 @@ type instanceCallback struct {
 // 否则长生命周期的 ServiceClient 会经回调闭包持续持有已废弃的组件。
 type ConfigChangeHandle struct {
 	fn func(serviceName string)
-}
-
-// subscribeCall 是一次「向 provider 注册 SDK 监听」的进行中状态。
-//
-// done 关闭即表示该次注册**已有结果**（成功或失败）；等待者醒来后重新决策
-// （读 subscribedServices / subscribing），而不是直接照抄结论。
-type subscribeCall struct {
-	done chan struct{}
 }
 
 // defaultCacheExpiry 是实例缓存过期时间的缺省值，与门面 nns.New 的缺省口径
@@ -435,7 +438,7 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 			for _, svc := range subscribed {
 				if err := c.subscriber.Unsubscribe(closeCtx, svc); err != nil {
 					nnsLog.Warn("unsubscribe failed on close", "service", svc, logx.ErrKey, err)
-					errs = append(errs, fmt.Errorf("unsubscribe %s: %w", svc, err))
+					errs = append(errs, pkgerrors.Wrapf(err, "unsubscribe %s", svc))
 				}
 			}
 		}
@@ -443,7 +446,7 @@ func (c *ServiceClient) CloseWithContext(ctx context.Context) error {
 			for _, svc := range services {
 				if err := c.configStore.StopListenConfig(closeCtx, svc, c.configGroup); err != nil {
 					nnsLog.Warn("stop listen config failed", "service", svc, logx.ErrKey, err)
-					errs = append(errs, fmt.Errorf("stop listen config %s: %w", svc, err))
+					errs = append(errs, pkgerrors.Wrapf(err, "stop listen config %s", svc))
 				}
 			}
 		}
