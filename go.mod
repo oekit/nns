@@ -6,7 +6,11 @@ require (
 	github.com/oekit/concurrency v0.40.0
 	github.com/oekit/core v0.18.0
 	github.com/oekit/logx v0.12.1
+<<<<<<< HEAD
 	github.com/oekit/pkg v0.61.1
+=======
+	github.com/oekit/pkg v0.61.2
+>>>>>>> 211bf2c (build: 依赖地板对齐——pkg → v0.61.2)
 	github.com/oekit/registry v0.8.4
 	github.com/oekit/registry/nacos v0.2.0
 	github.com/oekit/registry/nacosimpl v0.3.0
